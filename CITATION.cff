@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Arnoldt"
+  given-names: "Lucas"
+- family-names: "Engelmann"
+  given-names: "Jan"
+- family-names: "Holtkamp"
+  given-names: "Eva"
+title: "DonorData"
+version: 0.1.0
+url: "https://github.com/theislab/donordata"
