@@ -81,6 +81,22 @@ def constant_columns(obs: pd.DataFrame, codes: np.ndarray, first: np.ndarray, ex
     return [c for c in obs.columns if c not in exclude and is_constant_within(obs[c], codes, first)]
 
 
+def _align_bool_series(mask: pd.Series, index: pd.Index, what: str) -> pd.Series:
+    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction."""
+    if mask.index.equals(index):
+        return mask
+    labels = mask.index.astype(str)
+    if not labels.is_unique:
+        raise ValueError(f"Boolean mask over {what} has duplicate labels and cannot be aligned by index.")
+    missing = index.difference(labels)
+    if len(missing):
+        raise ValueError(
+            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, "
+            f"for example {list(missing[:3])}. Build the mask from the current object or pass a numpy array."
+        )
+    return pd.Series(mask.array, index=labels).reindex(index)
+
+
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
     """Turn a selection given as query, callable, labels or boolean mask into a boolean mask over rows."""
     if isinstance(key, str):
@@ -90,7 +106,7 @@ def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
     else:
         result = key
     if isinstance(result, pd.Series) and pd.api.types.is_bool_dtype(result.dtype):
-        result = result.to_numpy(dtype=bool, na_value=False)
+        result = _align_bool_series(result, frame.index, what).to_numpy(dtype=bool, na_value=False)
     array = np.asarray(result)
     if array.dtype != bool:
         if array.ndim != 1:

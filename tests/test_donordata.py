@@ -131,6 +131,24 @@ def test_filter_inplace(dd):
     validate(dd)
 
 
+def test_boolean_series_masks_align_by_index(cells, patients):
+    dd = DonorData.from_anndata(cells, donor_id="patient")
+    assert not dd.C.obs_names.equals(cells.obs_names)
+
+    b_cells = dd.filter_cells(cells.obs["cell_type"] == "B")
+    assert set(b_cells.C.obs_names) == set(cells.obs_names[cells.obs["cell_type"] == "B"])
+
+    reversed_mask = (patients["age"] > 40).iloc[::-1]
+    old = dd.filter_donors(reversed_mask)
+    assert set(old.D.index) == set(patients.index[patients["age"] > 40])
+
+    from_superset = b_cells.filter_cells(cells.obs["n_counts"] > 0)
+    assert from_superset.C.obs_names.equals(b_cells.C.obs_names)
+
+    with pytest.raises(ValueError, match="missing"):
+        dd.filter_cells(cells.obs["cell_type"].iloc[:5] == "B")
+
+
 def test_filter_cells_drops_empty_donors(dd):
     only_p0 = dd.filter_cells(lambda obs: obs["patient"] == "P0")
     assert only_p0.obs_names.tolist() == ["P0"]
