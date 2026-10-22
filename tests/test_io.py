@@ -60,6 +60,41 @@ def test_zarr_reads_dense_X_lazily(tmp_path, cells, genotypes):
     assert subset.C.X.shape[0] == dd.n_cells_per_donor["P1"]
 
 
+def test_zarr_keeps_sparse_X_on_disk_and_aggregates_it_by_block(tmp_path, monkeypatch, dd_genotypes):
+    from anndata.abc import CSRDataset
+
+    from donordata._core import _utils
+
+    path = tmp_path / "sparse.dd.zarr"
+    dd_genotypes.write_zarr_dd(path)
+    loaded = read_zarr_dd(path)
+    assert isinstance(loaded.C.X, CSRDataset)
+    monkeypatch.setattr(_utils, "BLOCK_NNZ", 25)
+    monkeypatch.setattr(type(loaded.C.X), "to_memory", lambda self: pytest.fail("the whole matrix was read"))
+    selections = [
+        lambda d: d,
+        lambda d: d.filter_donors(["P1", "P4", "P6"]),
+        lambda d: d.sel(C_var=["gene3", "gene0", "gene7"]),
+    ]
+    for select in selections:
+        for func in ("sum", "mean", "var", "count_nonzero"):
+            for cell_filter in ({}, {"filter_key": "cell_type", "filter_value": "B"}):
+                expected, result = select(dd_genotypes), select(loaded)
+                expected.aggregate(key_added="agg", func=func, **cell_filter)
+                result.aggregate(key_added="agg", func=func, **cell_filter)
+                assert result.obsm["agg"].columns.equals(expected.obsm["agg"].columns)
+                np.testing.assert_allclose(result.obsm["agg"].to_numpy(), expected.obsm["agg"].to_numpy())
+
+
+def test_zarr_reads_selected_D_var_columns(tmp_path, dd_genotypes):
+    path = tmp_path / "genotypes.dd.zarr"
+    dd_genotypes.write_zarr_dd(path)
+    loaded = read_zarr_dd(path, var_columns=["chrom", "pos"])
+    assert list(loaded.D.var.columns) == ["chrom", "pos"]
+    assert loaded.D.var_names.equals(dd_genotypes.D.var_names)
+    np.testing.assert_array_equal(loaded.D.var["pos"], dd_genotypes.D.var["pos"])
+
+
 def test_roundtrip_mudata_C_h5(tmp_path, cells, patients):
     protein = cells[:, :3].copy()
     protein.var_names = ["CD3", "CD19", "CD56"]
@@ -85,7 +120,7 @@ def test_roundtrip_mudata_zarr_without_pulling_columns(tmp_path, cells, patients
     loaded = read_zarr_dd(tmp_path / "multi.dd.zarr")
     assert isinstance(loaded.C, md.MuData)
     assert list(loaded.C.obs.columns) == ["patient"]
-    np.testing.assert_allclose(loaded.C.mod["prot"].X.toarray(), dd.C.mod["prot"].X.toarray())
+    np.testing.assert_allclose(loaded.C.mod["prot"].X.to_memory().toarray(), dd.C.mod["prot"].X.toarray())
     assert list(dd.C.obs.columns) == ["patient"]
 
 

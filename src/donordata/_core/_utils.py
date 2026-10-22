@@ -7,9 +7,11 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
+from anndata.abc import CSRDataset
 from mudata import MuData
 
 AGGREGATIONS = ("sum", "mean", "var", "count_nonzero", "median", "min", "max")
+BLOCK_NNZ = 50_000_000
 
 
 def _keep(self, *args, **kwargs) -> None:
@@ -109,6 +111,19 @@ def _is_dask(X) -> bool:
     return type(X).__module__.startswith("dask")
 
 
+class RowSubset:
+    """Rows and columns of a backed sparse matrix, for the view of an AnnData read from disk."""
+
+    def __init__(self, matrix: CSRDataset, rows: np.ndarray, columns: np.ndarray | None):
+        self.matrix, self.rows, self.columns = matrix, rows, columns
+        self.shape = (rows.size, matrix.shape[1] if columns is None else columns.size)
+
+    def to_memory(self):
+        order = np.argsort(self.rows, kind="stable")
+        X = self.matrix[self.rows[order]][np.argsort(order)]
+        return X if self.columns is None else X[:, self.columns]
+
+
 def _in_memory(X):
     if isinstance(X, pd.DataFrame):
         return X.to_numpy()
@@ -127,32 +142,62 @@ def _dense(X) -> np.ndarray:
     return np.asarray(X)
 
 
-def group_sum(X, codes: np.ndarray, n_groups: int) -> np.ndarray:
-    """Sum the rows of ``X`` within every group. Rows with code ``-1`` are ignored."""
-    X = _in_memory(X)
+def _csr_batches(indptr: np.ndarray, rows: np.ndarray) -> list[np.ndarray]:
+    """Split ``rows`` into consecutive batches holding about :data:`BLOCK_NNZ` stored values each."""
+    cumulative = np.cumsum(indptr[rows + 1] - indptr[rows])
+    cuts = np.unique(np.searchsorted(cumulative, np.arange(BLOCK_NNZ, cumulative[-1], BLOCK_NNZ), side="right"))
+    return [batch for batch in np.split(rows, cuts) if batch.size]
+
+
+def _row_blocks(X, codes: np.ndarray):
+    """Blocks of rows of ``X`` with their codes, read one at a time from dask arrays and backed matrices."""
+    columns = None
+    if isinstance(X, RowSubset):
+        full = np.full(X.matrix.shape[0], -1, dtype=np.int64)
+        full[X.rows] = codes
+        X, codes, columns = X.matrix, full, X.columns
     if _is_dask(X):
-        total = np.zeros((n_groups, X.shape[1]))
         start = 0
         for size in X.chunks[0]:
-            stop = start + size
-            total += group_sum(X[start:stop].compute(), codes[start:stop], n_groups)
-            start = stop
-        return total
-    rows = np.flatnonzero(codes >= 0)
-    indicator = sp.csr_matrix((np.ones(rows.size), (codes[rows], rows)), shape=(n_groups, X.shape[0]))
-    if not sp.issparse(X):
-        X = np.asarray(X, dtype=np.float64)
-    result = indicator @ X
-    return result.toarray() if sp.issparse(result) else np.asarray(result, dtype=np.float64)
+            yield X[start : start + size].compute(), codes[start : start + size]
+            start += size
+        return
+    if not isinstance(X, CSRDataset):
+        yield _in_memory(X), codes
+        return
+    indptr = np.asarray(X.group["indptr"][...])
+    wanted = np.flatnonzero(codes >= 0)
+    if wanted.size == 0:
+        return
+    if wanted.size > X.shape[0] // 2:
+        # most rows are needed: contiguous blocks read faster than a selection of rows
+        for batch in _csr_batches(indptr, np.arange(X.shape[0])):
+            block = X[batch[0] : batch[-1] + 1]
+            yield (block if columns is None else block[:, columns]), codes[batch]
+    else:
+        for batch in _csr_batches(indptr, wanted):
+            block = X[batch]
+            yield (block if columns is None else block[:, columns]), codes[batch]
 
 
-def _transform(X, func: Callable):
-    X = _in_memory(X)
-    if sp.issparse(X):
-        return func(X.astype(np.float64))
-    if _is_dask(X):
-        return func(X.astype(np.float64))
-    return func(np.asarray(X, dtype=np.float64))
+def group_sum(X, codes: np.ndarray, n_groups: int, transform: Callable | None = None) -> np.ndarray:
+    """Sum the rows of ``X``, after ``transform``, within every group. Rows with code ``-1`` are ignored.
+
+    Dask arrays and backed sparse matrices are read block by block.
+    """
+    total = np.zeros((n_groups, X.shape[1]))
+    for block, block_codes in _row_blocks(X, codes):
+        rows = np.flatnonzero(block_codes >= 0)
+        if rows.size == 0:
+            continue
+        if transform is not None:
+            block = transform(block.astype(np.float64) if sp.issparse(block) else np.asarray(block, dtype=np.float64))
+        elif not sp.issparse(block):
+            block = np.asarray(block, dtype=np.float64)
+        indicator = sp.csr_matrix((np.ones(rows.size), (block_codes[rows], rows)), shape=(n_groups, block.shape[0]))
+        result = indicator @ block
+        total += result.toarray() if sp.issparse(result) else np.asarray(result, dtype=np.float64)
+    return total
 
 
 def aggregate_rows(X, codes: np.ndarray, n_groups: int, func: str = "mean") -> np.ndarray:
@@ -161,7 +206,7 @@ def aggregate_rows(X, codes: np.ndarray, n_groups: int, func: str = "mean") -> n
     Parameters
     ----------
     X
-        Dense, sparse or dask matrix with one row per element of ``codes``.
+        Dense, sparse, backed sparse or dask matrix with one row per element of ``codes``.
     codes
         Group of every row, ``-1`` for rows to ignore.
     n_groups
@@ -184,13 +229,13 @@ def aggregate_rows(X, codes: np.ndarray, n_groups: int, func: str = "mean") -> n
         if func == "sum":
             result = group_sum(X, codes, n_groups)
         elif func == "count_nonzero":
-            result = group_sum(_transform(X, lambda A: (A != 0).astype(np.float64)), codes, n_groups)
+            result = group_sum(X, codes, n_groups, lambda A: (A != 0).astype(np.float64))
         elif func in ("mean", "var"):
             mean = group_sum(X, codes, n_groups) / counts
             if func == "mean":
                 result = mean
             else:
-                squares = group_sum(_transform(X, lambda A: A.multiply(A) if sp.issparse(A) else A**2), codes, n_groups)
+                squares = group_sum(X, codes, n_groups, lambda A: A.multiply(A) if sp.issparse(A) else A**2)
                 result = np.clip((squares - counts * mean**2) / (counts - 1), 0, None)
         else:
             result = np.full((n_groups, X.shape[1]), np.nan)
@@ -237,9 +282,16 @@ def cell_matrix(C: AnnData | MuData, layer: str | None = None, obsm: str | None 
     adata, rows = modality(C, mod)
     if obsm is not None:
         return adata.obsm[obsm], rows
-    if layer is not None and layer != "X":
-        return adata.layers[layer], rows
-    return adata.X, rows
+    layer = None if layer == "X" else layer
+    if adata.is_view:
+        # the matrix of a view is read in full on access, aggregating a backed one goes by its parent instead
+        parent = adata._adata_ref
+        matrix = parent.X if layer is None else parent.layers[layer]
+        if isinstance(matrix, CSRDataset):
+            columns = np.arange(parent.n_vars)[adata._vidx]
+            columns = None if np.array_equal(columns, np.arange(parent.n_vars)) else columns
+            return RowSubset(matrix, np.arange(parent.n_obs)[adata._oidx], columns), rows
+    return (adata.X if layer is None else adata.layers[layer]), rows
 
 
 def column_of(matrix, position: int) -> np.ndarray:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+from functools import partial
 from pathlib import Path
 
 import anndata as ad
@@ -13,7 +14,7 @@ from anndata import AnnData
 from anndata._types import StorageType
 from anndata.compat import _read_attr
 from anndata.experimental import read_dispatched
-from anndata.io import read_elem
+from anndata.io import read_elem, sparse_dataset
 from mudata import MuData
 
 from donordata._core._utils import build_mudata
@@ -28,21 +29,38 @@ def _is_matrix_elem(elem_name: str) -> bool:
 _ANNDATA_SLOTS = ("X", "obs", "var", "obsm", "varm", "obsp", "varp", "layers", "uns", "raw")
 
 
-def _lazy_zarr_callback(func, elem_name: str, elem, iospec):
-    """``read_dispatched`` callback that keeps dense ``X`` and layers as dask arrays."""
+def _read_columns(group, columns) -> pd.DataFrame:
+    """Read the index and ``columns`` of a DataFrame stored by anndata."""
+    missing = [c for c in columns if c not in group]
+    if missing:
+        raise KeyError(f"Columns {missing} not found in {group.name}.")
+    index_key = group.attrs["_index"]
+    frame = pd.DataFrame({c: read_elem(group[c]) for c in columns}, index=pd.Index(read_elem(group[index_key])))
+    if index_key != "_index":
+        frame.index.name = index_key
+    return frame
+
+
+def _lazy_zarr_callback(func, elem_name: str, elem, iospec, var_columns=None):
+    """``read_dispatched`` callback that keeps ``X`` and layers on disk, dense ones as dask arrays."""
     if iospec.encoding_type == "anndata" or elem_name.endswith("/"):
-        return ad.AnnData(
-            **{k: read_dispatched(v, _lazy_zarr_callback) for k, v in dict(elem).items() if k in _ANNDATA_SLOTS}
-        )
+        callback = partial(_lazy_zarr_callback, var_columns=var_columns)
+        return ad.AnnData(**{k: read_dispatched(v, callback) for k, v in dict(elem).items() if k in _ANNDATA_SLOTS})
+    if var_columns is not None and elem_name.endswith("/var") and iospec.encoding_type == "dataframe":
+        return _read_columns(elem, var_columns)
     if _is_matrix_elem(elem_name) and iospec.encoding_type == "array":
         return da.from_zarr(elem)
+    if _is_matrix_elem(elem_name) and iospec.encoding_type in ("csr_matrix", "csc_matrix"):
+        return sparse_dataset(elem)
     if _is_matrix_elem(elem_name):
         return read_elem(elem)
     return func(elem)
 
 
-def _read_anndata(group, lazy: bool):
-    return read_dispatched(group, callback=_lazy_zarr_callback) if lazy else read_elem(group)
+def _read_anndata(group, lazy: bool, var_columns=None):
+    if not lazy:
+        return read_elem(group)
+    return read_dispatched(group, callback=partial(_lazy_zarr_callback, var_columns=var_columns))
 
 
 def _read_mudata(group: StorageType, lazy: bool = False) -> MuData:
@@ -57,12 +75,12 @@ def _read_mudata(group: StorageType, lazy: bool = False) -> MuData:
     return build_mudata(lambda: MuData(mods, axis=axis, **kwargs))
 
 
-def _read_side(group, lazy: bool):
+def _read_side(group, lazy: bool, var_columns=None):
     encoding = group.attrs.get("encoding-type")
     if encoding == "MuData":
         return _read_mudata(group, lazy)
     if encoding == "anndata":
-        return _read_anndata(group, lazy)
+        return _read_anndata(group, lazy, var_columns)
     if encoding == "dataframe":
         return read_elem(group)
     raise ValueError(f"Unknown encoding type {encoding!r} for {group.name}")
@@ -87,14 +105,14 @@ def _unpack_obsm(group, container) -> None:
         container.obsm[entry] = pd.DataFrame(values, index=container.obs_names, columns=columns)
 
 
-def _read_level(f, key: str, lazy: bool):
+def _read_level(f, key: str, lazy: bool, var_columns=None):
     """Return the object to hand to DonorData for a level, and the AnnData holding a table level."""
     group = f[key]
     if group.attrs.get("donordata-table", False):
         shell = read_elem(group)
         _unpack_obsm(group, shell)
         return shell.obs, shell
-    container = _read_ehrdata(group, lazy) if "tem" in group else _read_side(group, lazy)
+    container = _read_ehrdata(group, lazy) if "tem" in group else _read_side(group, lazy, var_columns)
     if isinstance(container, AnnData):
         _unpack_obsm(group, container)
     return container, None
@@ -110,7 +128,7 @@ def _read_cells(f, path: str | None, lazy: bool):
     return _read_side(f["C"], lazy)
 
 
-def _read_dd(f, lazy: bool = False, path: str | None = None) -> DonorData:
+def _read_dd(f, lazy: bool = False, path: str | None = None, var_columns=None) -> DonorData:
     encoding_type = f.attrs.get("encoding-type")
     if encoding_type is not None and encoding_type != DONORDATA_ENCODING_TYPE:
         raise ValueError(
@@ -132,7 +150,7 @@ def _read_dd(f, lazy: bool = False, path: str | None = None) -> DonorData:
             UserWarning,
             stacklevel=3,
         )
-    D, D_shell = _read_level(f, "D" if "D" in f else "G", lazy)
+    D, D_shell = _read_level(f, "D" if "D" in f else "G", lazy, var_columns)
     S, S_shell = _read_level(f, "S", lazy) if "S" in f else (None, None)
     C = _read_cells(f, path, lazy)
     if D_shell is not None:
@@ -176,22 +194,25 @@ def read_h5_dd(path: str | Path) -> DonorData:
         return _read_dd(f)
 
 
-def read_zarr_dd(path: str | Path) -> DonorData:
+def read_zarr_dd(path: str | Path, var_columns: list[str] | None = None) -> DonorData:
     """Read a DonorData from a Zarr store.
 
-    Dense ``X`` and dense layers are read lazily as dask arrays, so selecting a subset, for example a
-    single cell type, only loads that subset once it is computed.
+    ``X`` and layers stay on disk, dense ones as dask arrays and sparse ones as backed sparse matrices,
+    so selecting a subset, for example a single cell type, only reads that subset, and
+    :meth:`DonorData.aggregate` reads them block by block.
 
     Parameters
     ----------
     path
         Store written by :meth:`DonorData.write_zarr_dd`.
+    var_columns
+        Columns of ``D.var`` to read, for example ``["chrom", "pos"]`` for genotypes. All by default.
 
     Returns
     -------
     DonorData
     """
-    return _read_dd(zarr.open(str(path), mode="r"), lazy=True, path=str(path))
+    return _read_dd(zarr.open(str(path), mode="r"), lazy=True, path=str(path), var_columns=var_columns)
 
 
 def read_dd(path: str | Path, fmt: str | None = None) -> DonorData:
