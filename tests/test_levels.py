@@ -240,8 +240,8 @@ def test_concat_three_levels(dd3):
 
 
 @pytest.mark.parametrize("extension", [".dd.h5", ".dd.zarr"])
-def test_ehrdata_donor_level(tmp_path, cells, patients, extension):
-    ed = pytest.importorskip("ehrdata")
+def test_ehrdata_donor_level(tmp_path, cells, patients, extension, ehrdata):
+    ed = ehrdata
     rng = np.random.default_rng(0)
     series = rng.normal(size=(len(patients), 3, 4))
     edata = ed.EHRData(
@@ -262,7 +262,7 @@ def test_ehrdata_donor_level(tmp_path, cells, patients, extension):
     assert set(store.keys()) == {"D", "C"}
     assert "tem" in store["D"]
     plain = read_elem(store["D"])
-    assert type(plain).__name__ == "AnnData" and plain.layers["tem_data"].shape == (len(patients), 3, 4)
+    assert type(plain).__name__ == "AnnData" and plain.obsm["_ed_ondisk_layers_tem_data"].shape == (len(patients), 3, 4)
     if extension == ".dd.h5":
         store.close()
     loaded = read_dd(path)
@@ -284,8 +284,8 @@ def test_donor_level_is_built_from_the_sample_table(dd3):
         DonorData(C=dd3.C, donor_id=dd3.donor_id)
 
 
-def test_ehrdata_sample_level(tmp_path, dd3):
-    ed = pytest.importorskip("ehrdata")
+def test_ehrdata_sample_level(tmp_path, dd3, ehrdata):
+    ed = ehrdata
     rng = np.random.default_rng(1)
     samples = dd3.S.copy()
     series = rng.normal(size=(len(samples), 2, 3))

@@ -29,6 +29,7 @@ extensions = [
 ]
 
 autosummary_generate = True
+autodoc_mock_imports = ["torch"]
 autodoc_member_order = "groupwise"
 default_role = "literal"
 napoleon_google_docstring = False

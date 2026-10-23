@@ -56,7 +56,8 @@ def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
     """Position of every value in ``categories``, or ``-1`` when it is not one of them."""
-    return np.asarray(pd.Categorical(string_labels(values), categories=categories).codes, dtype=np.int64)
+    labels = np.asarray(string_labels(values), dtype=object)
+    return np.asarray(pd.Index(categories).get_indexer(labels), dtype=np.int64)
 
 
 def first_positions(codes: np.ndarray, n_groups: int) -> np.ndarray:
@@ -361,7 +362,7 @@ def shallow_with_obs(adata: AnnData | MuData, obs: pd.DataFrame, obsm: dict | No
         varm=dict(adata.varm),
         obsp=dict(adata.obsp),
         varp=dict(adata.varp),
-        layers=dict(adata.layers),
+        layers={k: v for k, v in adata.layers.items() if k is not None},
     )
     if adata.raw is not None:
         new.raw = adata.raw.to_adata()

@@ -18,6 +18,7 @@ from anndata.io import read_elem, sparse_dataset
 from mudata import MuData
 
 from donordata._core._utils import build_mudata
+from donordata._core._write import EHRDATA_LAYER_PREFIX, EHRDATA_X_KEY
 from donordata._core.donordata import DonorData, _copy_matrices
 from donordata._core.schema import DONORDATA_ENCODING_TYPE, DONORDATA_ENCODING_VERSION, READABLE_ENCODING_VERSIONS
 
@@ -91,7 +92,24 @@ def _read_ehrdata(group, lazy: bool):
         from ehrdata import EHRData
     except ImportError as e:
         raise ImportError(f"{group.name} holds an EHRData, install ehrdata to read it.") from e
-    return EHRData.from_adata(_read_anndata(group, lazy), tem=read_elem(group["tem"]))
+    adata = _read_anndata(group, lazy)
+    obsm = dict(adata.obsm)
+    X = obsm.pop(EHRDATA_X_KEY, adata.X)
+    layers = {name: layer for name, layer in adata.layers.items() if name is not None}
+    for name in [k for k in obsm if k.startswith(EHRDATA_LAYER_PREFIX)]:
+        layers[name.removeprefix(EHRDATA_LAYER_PREFIX)] = obsm.pop(name)
+    return EHRData(
+        X=X,
+        obs=adata.obs,
+        var=adata.var,
+        uns=dict(adata.uns),
+        obsm=obsm,
+        varm=dict(adata.varm),
+        obsp=dict(adata.obsp),
+        varp=dict(adata.varp),
+        layers=layers,
+        tem=read_elem(group["tem"]),
+    )
 
 
 def _unpack_obsm(group, container) -> None:

@@ -39,8 +39,9 @@ def _write_anndata_zarr_dense_x_chunked(
     own chunks and a plain array is chunked with at most 4096 entries per axis.
     """
     X = adata.X
-    dense_layers = {k: v for k, v in adata.layers.items() if hasattr(v, "ndim") and not sp.issparse(v)}
-    sparse_layers = {k: v for k, v in adata.layers.items() if k not in dense_layers}
+    layers = {k: v for k, v in adata.layers.items() if k is not None}
+    dense_layers = {k: v for k, v in layers.items() if hasattr(v, "ndim") and not sp.issparse(v)}
+    sparse_layers = {k: v for k, v in layers.items() if k not in dense_layers}
 
     placeholder = sp.csr_matrix((adata.n_obs, adata.n_vars), dtype=X.dtype)
     shell = AnnData(
@@ -107,22 +108,43 @@ def pack_obsm(obsm) -> tuple[dict, dict[str, np.ndarray]]:
     return entries, columns
 
 
+EHRDATA_X_KEY = "_ed_ondisk_X"
+EHRDATA_LAYER_PREFIX = "_ed_ondisk_layers_"
+
+
+def _dense(array):
+    return array.todense() if hasattr(array, "todense") and not sp.issparse(array) else np.asarray(array)
+
+
 def write_ehrdata(f, key: str, edata, obsm: dict | None = None) -> None:
     """Write an EHRData as ehrdata does, an AnnData group ``key`` with the time axis in ``key/tem``.
 
-    Three dimensional layers are ordinary layers of that AnnData, so the group can also be read by
-    anndata alone.
+    AnnData only stores two dimensional ``X`` and layers, so three dimensional ones are moved to
+    ``obsm`` under the keys that ehrdata reserves for them, and the group can be read by anndata.
     """
+    obsm = dict(edata.obsm) if obsm is None else dict(obsm)
+    X = edata.X
+    if getattr(X, "ndim", 2) == 3:
+        obsm[EHRDATA_X_KEY] = _dense(X)
+        X = None
+    layers = {}
+    for name, layer in edata.layers.items():
+        if name is None:
+            continue
+        if getattr(layer, "ndim", 2) == 3:
+            obsm[f"{EHRDATA_LAYER_PREFIX}{name}"] = _dense(layer)
+        else:
+            layers[name] = layer
     base = AnnData(
-        X=edata.X,
+        X=X,
         obs=edata.obs,
         var=edata.var,
         uns=dict(edata.uns),
-        obsm=dict(edata.obsm) if obsm is None else obsm,
+        obsm=obsm,
         varm=dict(edata.varm),
         obsp=dict(edata.obsp),
         varp=dict(edata.varp),
-        layers={name: layer for name, layer in edata.layers.items() if name is not None},
+        layers=layers,
     )
     write_elem(f, key, base)
     write_elem(f[key], "tem", edata.tem)
@@ -176,8 +198,10 @@ def write_group(dd, f, zarr_path: str | None = None, x_chunks=None) -> None:
         f.attrs["sample_id"] = dd.sample_id
     f.attrs["var_dims_to_sync"] = list(dd._var_dims_to_sync)
 
-    for key, value in dd.uns.items():
-        try:
-            write_elem(f, f"uns/{key}", value)
-        except (TypeError, NotImplementedError):
-            f.create_dataset(f"uns/{key}", data=value)
+    if dd.uns:
+        uns = f.require_group("uns")
+        for key, value in dd.uns.items():
+            try:
+                write_elem(uns, key, value)
+            except (TypeError, NotImplementedError):
+                uns.create_dataset(key, data=value)

@@ -1,5 +1,11 @@
 ![DonorData](docs/_static/img/donordata_logo.svg)
 
+[![Build](https://github.com/theislab/donordata/actions/workflows/build.yaml/badge.svg)](https://github.com/theislab/donordata/actions/workflows/build.yaml)
+[![License](https://img.shields.io/github/license/theislab/donordata)](https://opensource.org/licenses/Apache-2.0)
+[![Read the Docs](https://img.shields.io/readthedocs/donordata/latest.svg?label=Read%20the%20Docs)](https://donordata.readthedocs.io/)
+[![Test](https://github.com/theislab/donordata/actions/workflows/test.yaml/badge.svg)](https://github.com/theislab/donordata/actions/workflows/test.yaml)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
+
 # DonorData
 
 [Installation](docs/install.md) | [API](docs/api.md) | [Specification](docs/io/spec.md) | [Design](https://github.com/theislab/donordata/blob/main/DESIGN.md) |

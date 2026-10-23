@@ -100,3 +100,12 @@ def dd3(visits):
     from donordata import DonorData
 
     return DonorData.from_anndata(visits, donor_id="patient", sample_id="sample")
+
+
+@pytest.fixture
+def ehrdata():
+    try:
+        import ehrdata
+    except (ImportError, AttributeError) as e:
+        pytest.skip(f"ehrdata cannot be imported: {e}")
+    return ehrdata

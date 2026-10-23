@@ -46,16 +46,17 @@ optional-dependencies.doc = [
   "ipykernel",
   "ipython",
   "linkify-it-py",
+  "matplotlib",
   "myst-nb>=1.1",
   "setuptools",
-  "sphinx>=4",
   "sphinx-autodoc-typehints",
   "sphinx-book-theme>=1",
   "sphinx-copybutton",
+  "sphinx>=4",
   "sphinxext-opengraph",
 ]
 optional-dependencies.ehr = [
-  "ehrdata",
+  "ehrdata>=0.1; python_version>='3.12'",
 ]
 optional-dependencies.ml = [
   "torch",
@@ -65,16 +66,17 @@ optional-dependencies.spatial = [
 ]
 optional-dependencies.test = [
   "coverage",
-  "ehrdata",
+  "ehrdata>=0.1; python_version>='3.12'",
   "pytest",
 ]
 optional-dependencies.tutorials = [
-  "ehrdata",
+  "ehrdata>=0.1; python_version>='3.12'",
   "matplotlib",
   "scanpy",
   "scikit-learn",
   "seaborn",
 ]
+urls.Documentation = "https://donordata.readthedocs.io"
 urls.Homepage = "https://github.com/theislab/donordata"
 urls.Source = "https://github.com/theislab/donordata"
 
