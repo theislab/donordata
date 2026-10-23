@@ -39,7 +39,7 @@ DonorData
 `C.obs[donor_id]` names the donor of every cell. With a sample level, `C.obs[sample_id]` names the sample of every
 cell and `S[donor_id]` the donor of every sample. Selecting units at one level selects the matching units at the other
 levels, and matrices in `obsm` and `obsp` are subset with them. A donor can be any unit that groups cells, for example
-a patient, a target gene in a CRISPR screen or a compound in a drug screen. 
+a patient, a target gene in a CRISPR screen or a compound in a drug screen.
 
 ## Overview
 
@@ -57,7 +57,7 @@ dd.D
 ```
 
 A donor table can also be passed directly. `D` is an AnnData only when donors have measurements of their own, such as
-genotypes:
+the genotypes that [cellink](https://github.com/theislab/cellink) analyses:
 
 ```python
 dd = DonorData(D=patients, C=adata, donor_id="patient")
@@ -111,9 +111,14 @@ See the [installation guide](docs/install.md) for optional dependencies.
 
 The tutorials cover a [first object](docs/tutorials/getting_started.ipynb), a
 [patient cohort](docs/tutorials/patient_cohort.ipynb), a [CRISPR screen](docs/tutorials/perturbation_screen.ipynb)
-and [electronic health records](docs/tutorials/ehr_cohort.ipynb). [cellink](https://github.com/theislab/cellink)
-uses `DonorData` for single-cell genetics and [patpy](https://github.com/lueckenlab/patpy) for sample
-representations.
+and [electronic health records](docs/tutorials/ehr_cohort.ipynb).
+
+## Packages using DonorData
+
+[cellink](https://github.com/theislab/cellink) holds the genotypes of donors in `D` and runs single-cell genetics on
+them, from eQTL mapping and rare variant tests to colocalization and LD score regression.
+[patpy](https://github.com/lueckenlab/patpy) computes representations of donors or samples from their cells and
+compares them across a cohort.
 
 ## Citation
 
