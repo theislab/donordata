@@ -65,6 +65,10 @@ html_logo = "_static/img/donordata_logo.svg"
 html_favicon = "_static/img/donordata_logo_mark.svg"
 ogp_social_cards = {"image": "_static/img/donordata_logo.png"}
 html_theme_options = {
+    "logo": {
+        "image_light": "_static/img/donordata_logo.svg",
+        "image_dark": "_static/img/donordata_logo_dark.svg",
+    },
     "repository_url": repository_url,
     "use_repository_button": True,
     "path_to_docs": "docs/",

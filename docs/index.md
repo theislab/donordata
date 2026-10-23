@@ -1,4 +1,5 @@
 ```{include} ../README.md
+:start-after: '<!-- logo-image-end -->'
 :relative-docs: docs/
 :relative-images:
 ```

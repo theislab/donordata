@@ -1,4 +1,12 @@
-![DonorData](docs/_static/img/donordata_logo.svg)
+<!-- logo-image-start -->
+
+<p align="center">
+  <img src="docs/_static/img/donordata_logo.svg" alt="DonorData" width="360">
+</p>
+
+<br>
+
+<!-- logo-image-end -->
 
 [![Build](https://github.com/theislab/donordata/actions/workflows/build.yaml/badge.svg)](https://github.com/theislab/donordata/actions/workflows/build.yaml)
 [![License](https://img.shields.io/github/license/theislab/donordata)](https://opensource.org/licenses/Apache-2.0)
@@ -6,7 +14,7 @@
 [![Test](https://github.com/theislab/donordata/actions/workflows/test.yaml/badge.svg)](https://github.com/theislab/donordata/actions/workflows/test.yaml)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 
-# DonorData
+# DonorData: single-cell data across donors, samples and cells
 
 [Installation](docs/install.md) | [API](docs/api.md) | [Specification](docs/io/spec.md) | [Design](https://github.com/theislab/donordata/blob/main/DESIGN.md) |
 [Changelog](docs/changelog.md)
