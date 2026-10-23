@@ -31,7 +31,7 @@ DonorData
 `C.obs[donor_id]` names the donor of every cell. With a sample level, `C.obs[sample_id]` names the sample of every
 cell and `S[donor_id]` the donor of every sample. Selecting units at one level selects the matching units at the other
 levels, and matrices in `obsm` and `obsp` are subset with them. A donor can be any unit that groups cells, for example
-a patient, a target gene in a CRISPR screen or a compound in a drug screen.
+a patient, a target gene in a CRISPR screen or a compound in a drug screen. 
 
 ## Overview
 
