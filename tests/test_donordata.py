@@ -2,7 +2,9 @@ import mudata as md
 import numpy as np
 import pandas as pd
 import pytest
+from anndata import AnnData
 
+import donordata
 from donordata import DonorData, DonorDataSchemaError, validate
 
 if hasattr(md, "set_options"):
@@ -401,3 +403,170 @@ def test_donor_level_is_only_called_D(cells, genotypes):
     assert not hasattr(dd, "G") and not hasattr(dd, "G_type")
     with pytest.raises(TypeError):
         DonorData(G=genotypes, C=cells, donor_id="patient")
+
+
+def _reordered_dd():
+    """DonorData whose samples and cells the constructor reorders, so position and label disagree.
+
+    Donor ``a`` has samples s1 and s3, donor ``b`` has s0 and s2; cells c1 and c4 belong to s0.
+    """
+    donors = pd.DataFrame(index=pd.Index(["a", "b"], name="donor_id"))
+    samples = pd.DataFrame(
+        {"donor_id": ["b", "a", "b", "a"]}, index=pd.Index(["s0", "s1", "s2", "s3"], name="sample_id")
+    )
+    obs = pd.DataFrame({"sample_id": ["s2", "s0", "s3", "s1", "s0", "s3"]}, index=[f"c{i}" for i in range(6)])
+    cells = AnnData(np.zeros((6, 1)), obs=obs)
+    return DonorData(D=donors, S=samples, C=cells, donor_id="donor_id", sample_id="sample_id"), cells, samples
+
+
+def test_reordered_dd_reorders_samples_and_cells():
+    dd, cells, samples = _reordered_dd()
+    assert not dd.C.obs_names.equals(cells.obs_names)
+    assert not dd.levels["sample"].obs_names.equals(samples.index)
+
+
+CELL_SELECTIONS = {
+    "filter_cells": lambda dd, key: dd.filter_cells(key),
+    "sel": lambda dd, key: dd.sel(C_obs=key),
+    "getitem": lambda dd, key: dd[:, :, key],
+}
+CELL_KEYS = {
+    "Series in input order": lambda dd, cells: pd.Series(cells.obs_names.isin(["c1", "c4"]), index=cells.obs_names),
+    "Series in reversed order": lambda dd, cells: pd.Series(cells.obs_names.isin(["c1", "c4"]), index=cells.obs_names)[
+        ::-1
+    ],
+    "numpy mask in dd order": lambda dd, cells: dd.C.obs_names.isin(["c1", "c4"]),
+    "labels": lambda dd, cells: ["c1", "c4"],
+}
+
+
+@pytest.mark.parametrize("select", CELL_SELECTIONS.values(), ids=CELL_SELECTIONS.keys())
+@pytest.mark.parametrize("make_key", CELL_KEYS.values(), ids=CELL_KEYS.keys())
+def test_cell_selection_keeps_the_named_cells(select, make_key):
+    dd, cells, _ = _reordered_dd()
+    result = select(dd, make_key(dd, cells))
+    assert sorted(result.C.obs_names) == ["c1", "c4"]
+    assert list(result.levels["sample"].obs_names) == ["s0"]
+    assert list(result.obs_names) == ["b"]
+
+
+DONOR_SELECTIONS = {
+    "filter_donors": lambda dd, key: dd.filter_donors(key),
+    "sel": lambda dd, key: dd.sel(D_obs=key),
+    "getitem": lambda dd, key: dd[key],
+}
+
+
+@pytest.mark.parametrize("select", DONOR_SELECTIONS.values(), ids=DONOR_SELECTIONS.keys())
+def test_donor_selection_aligns_a_boolean_series_by_label(select):
+    dd, _, _ = _reordered_dd()
+    keep = pd.Series([True, False], index=["b", "a"])  # reversed relative to dd.obs_names
+    result = select(dd, keep)
+    assert list(result.obs_names) == ["b"]
+    assert sorted(result.levels["sample"].obs_names) == ["s0", "s2"]
+
+
+SAMPLE_SELECTIONS = {
+    "filter_samples": lambda dd, key: dd.filter_samples(key),
+    "sel": lambda dd, key: dd.sel(S_obs=key),
+}
+
+
+@pytest.mark.parametrize("select", SAMPLE_SELECTIONS.values(), ids=SAMPLE_SELECTIONS.keys())
+def test_sample_selection_aligns_a_boolean_series_by_label(select):
+    dd, _, samples = _reordered_dd()
+    keep = pd.Series(samples.index == "s0", index=samples.index)  # in input order, not dd order
+    result = select(dd, keep)
+    assert list(result.levels["sample"].obs_names) == ["s0"]
+    assert sorted(result.C.obs_names) == ["c1", "c4"]
+
+
+def test_boolean_series_with_unknown_labels_raises():
+    dd, cells, _ = _reordered_dd()
+    keep = pd.Series(True, index=[f"x{i}" for i in range(cells.n_obs)])
+    with pytest.raises(ValueError, match="missing"):
+        dd.sel(C_obs=keep)
+
+
+MISSING_DONORS = {
+    "object None and nan": np.array(["a", "a", None, "b", np.nan], dtype=object),
+    "string dtype pd.NA": pd.array(["a", "a", pd.NA, "b", pd.NA], dtype="string"),
+    "categorical NaN": pd.Categorical(["a", "a", None, "b", np.nan]),
+}
+
+
+@pytest.mark.parametrize("donor_ids", MISSING_DONORS.values(), ids=MISSING_DONORS.keys())
+def test_cells_with_missing_donor_are_dropped(caplog, donor_ids):
+    obs = pd.DataFrame({"donor_id": donor_ids}, index=[f"c{i}" for i in range(5)])
+    with caplog.at_level("WARNING"):
+        dd = DonorData.from_anndata(AnnData(np.zeros((5, 1)), obs=obs), "donor_id")
+    assert list(dd.obs_names) == ["a", "b"]
+    assert dd.n_cells == 3
+    assert "Dropping 2 cells with a missing 'donor_id'" in caplog.text
+
+
+def test_samples_and_cells_with_missing_labels_are_dropped(caplog):
+    samples = pd.DataFrame({"donor_id": ["a", np.nan, "b"]}, index=pd.Index(["s1", "s2", "s3"], name="sample_id"))
+    obs = pd.DataFrame({"sample_id": ["s1", "s2", None, "s3"]}, index=[f"c{i}" for i in range(4)])
+    with caplog.at_level("WARNING"):
+        dd = DonorData(S=samples, C=AnnData(np.zeros((4, 1)), obs=obs), sample_id="sample_id")
+    assert list(dd.obs_names) == ["a", "b"]
+    assert list(dd.levels["sample"].obs_names) == ["s1", "s3"]
+    assert list(dd.C.obs_names) == ["c0", "c3"]
+    assert "Dropping 1 samples with a missing 'donor_id'" in caplog.text
+    assert "Dropping 1 cells with a missing 'sample_id'" in caplog.text
+
+
+# Strings that stand for a missing value are dropped like missing values, in any case and with spaces around them.
+MISSING_STRINGS = [
+    "none",
+    "None",
+    "NONE",
+    "nan",
+    "NaN",
+    "NAN",
+    "null",
+    "NULL",
+    "Null",
+    "NA",
+    "<NA>",
+    "N/A",
+    "",
+    " nan ",
+    "NaT",
+]
+
+
+def test_donors_named_like_missing_values_are_dropped(caplog):
+    donor_ids = ["a", "b", *MISSING_STRINGS]
+    obs = pd.DataFrame({"donor_id": donor_ids}, index=[f"c{i}" for i in range(len(donor_ids))])
+    with caplog.at_level("WARNING"):
+        dd = DonorData.from_anndata(AnnData(np.zeros((len(obs), 1)), obs=obs), "donor_id")
+    assert list(dd.obs_names) == ["a", "b"]
+    assert dd.n_cells == 2
+    assert f"Dropping {len(MISSING_STRINGS)} cells with a missing 'donor_id'" in caplog.text
+    assert "donordata.settings.drop_missing_strings = False" in caplog.text
+
+
+def test_setting_keeps_donors_named_like_missing_values(monkeypatch, caplog):
+    monkeypatch.setattr(donordata.settings, "drop_missing_strings", False)
+    donor_ids = ["a", "NA", "None", "nan", None]
+    obs = pd.DataFrame({"donor_id": np.array(donor_ids, dtype=object)}, index=[f"c{i}" for i in range(5)])
+    with caplog.at_level("WARNING"):
+        dd = DonorData.from_anndata(AnnData(np.zeros((5, 1)), obs=obs), "donor_id")
+    assert sorted(dd.obs_names) == ["NA", "None", "a", "nan"]
+    assert "Dropping 1 cells with a missing 'donor_id'." in caplog.text
+    assert "drop_missing_strings" not in caplog.text  # the real None is dropped without the hint
+
+
+@pytest.mark.parametrize("extension", [None, ".dd.h5", ".dd.zarr"])
+def test_donors_that_only_resemble_missing_values_are_kept(tmp_path, caplog, extension):
+    names = ["Nancy", "nana", "nonexistent", "NA12878", "null_1", "N/A1"]
+    obs = pd.DataFrame({"donor_id": names}, index=[f"c{i}" for i in range(len(names))])
+    with caplog.at_level("WARNING"):
+        dd = DonorData.from_anndata(AnnData(np.zeros((len(obs), 1)), obs=obs), "donor_id")
+    if extension is not None:
+        dd.write_dd(str(tmp_path / f"x{extension}"))
+        dd = donordata.io.read_dd(str(tmp_path / f"x{extension}"))
+    assert sorted(dd.obs_names) == sorted(names)
+    assert "Dropping" not in caplog.text

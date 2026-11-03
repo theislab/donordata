@@ -10,6 +10,8 @@ from anndata import AnnData
 from anndata.abc import CSRDataset
 from mudata import MuData
 
+from donordata._settings import settings
+
 AGGREGATIONS = ("sum", "mean", "var", "count_nonzero", "median", "min", "max")
 BLOCK_NNZ = 50_000_000
 
@@ -47,11 +49,29 @@ def copy_container(container: AnnData | MuData) -> AnnData | MuData:
     return container.copy()
 
 
+# Identifiers that mean "missing", compared case-insensitively: the strings pandas reads as missing.
+MISSING_LABELS = {"", "na", "n/a", "<na>", "nan", "nat", "none", "null"}
+
+
+def is_missing_label(values: pd.Series) -> np.ndarray:
+    """Whether each identifier is missing, or a string that stands for a missing value such as ``"nan"``.
+
+    Strings count as missing only while ``donordata.settings.drop_missing_strings`` is ``True``.
+    """
+    if not settings.drop_missing_strings:
+        return values.isna().to_numpy()
+    text = values.astype(str)
+    missing_text = [label for label in pd.unique(text) if str(label).strip().lower() in MISSING_LABELS]
+    return (values.isna() | text.isin(missing_text)).to_numpy()
+
+
 def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
-    """Return identifiers as strings, keeping a categorical encoding when the input has one."""
+    """Return identifiers as strings, with missing ones as NaN, keeping a categorical encoding if the input has one."""
+    missing = is_missing_label(values)
     if isinstance(values.dtype, pd.CategoricalDtype):
-        return values.cat.rename_categories(values.cat.categories.astype(str)).array
-    return values.astype(str).to_numpy()
+        labels = values.cat.rename_categories(values.cat.categories.astype(str))
+        return labels.where(~missing).array
+    return values.astype(str).where(~missing).to_numpy()
 
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
@@ -98,6 +118,13 @@ def _align_bool_series(mask: pd.Series, index: pd.Index, what: str) -> pd.Series
             f"for example {list(missing[:3])}. Build the mask from the current object or pass a numpy array."
         )
     return pd.Series(mask.array, index=labels).reindex(index)
+
+
+def by_label(key, index: pd.Index, what: str):
+    """Align a boolean Series to ``index`` by label; return any other selection unchanged."""
+    if isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype):
+        return _align_bool_series(key, index, what).to_numpy(dtype=bool, na_value=False)
+    return key
 
 
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
@@ -207,11 +234,13 @@ def group_sum(X, codes: np.ndarray, n_groups: int, transform: Callable | None = 
         rows = np.flatnonzero(block_codes >= 0)
         if rows.size == 0:
             continue
+        if sp.issparse(block):
+            block = sp.csr_array(block)  # anndata may return a csr_matrix, which scipy 2 deprecates
         if transform is not None:
             block = transform(block.astype(np.float64) if sp.issparse(block) else np.asarray(block, dtype=np.float64))
         elif not sp.issparse(block):
             block = np.asarray(block, dtype=np.float64)
-        indicator = sp.csr_matrix((np.ones(rows.size), (block_codes[rows], rows)), shape=(n_groups, block.shape[0]))
+        indicator = sp.csr_array((np.ones(rows.size), (block_codes[rows], rows)), shape=(n_groups, block.shape[0]))
         result = indicator @ block
         total += result.toarray() if sp.issparse(result) else np.asarray(result, dtype=np.float64)
     return total

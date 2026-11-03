@@ -99,3 +99,14 @@ Requires PyTorch, see {doc}`install`.
    ml.MILDataset
    ml.mil_collate_fn
 ```
+
+## Settings
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated/
+
+   Settings
+```
+
+`donordata.settings` is the instance of {class}`Settings` that donordata uses.

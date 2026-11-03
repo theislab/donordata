@@ -20,6 +20,22 @@ from donordata._core.fields import DAnn
 
 logger = logging.getLogger(__name__)
 
+
+def _log_missing_labels(labels: pd.Series, units: str, key: str) -> None:
+    """Log how many units are dropped because their ``key`` is missing or a string such as ``"nan"``."""
+    missing = _utils.is_missing_label(labels)
+    if not missing.any():
+        return
+    n_strings = int((missing & labels.notna().to_numpy()).sum())
+    hint = (
+        f" ({n_strings} given as a string such as 'nan', 'None' or 'NA'; to keep such strings as names, "
+        "set donordata.settings.drop_missing_strings = False)"
+        if n_strings
+        else ""
+    )
+    logger.warning(f"Dropping {missing.sum()} {units} with a missing '{key}'{hint}.")
+
+
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
 _RANK = {"donor": 0, "sample": 1, "cell": 2}
@@ -222,7 +238,7 @@ class DonorData:
         if sample_id is None:
             return cls(D=table, C=cells, donor_id=donor_id)
         sample_table = obs.iloc[unit_first][[donor_id, *sample_columns]].copy()
-        sample_table[donor_id] = np.asarray(_utils.string_labels(sample_table[donor_id]), dtype=str)
+        sample_table[donor_id] = _utils.string_labels(sample_table[donor_id])
         sample_table.index = pd.Index(np.asarray(samples, dtype=str), name=sample_id)
         return cls(D=table, S=sample_table, C=cells, donor_id=donor_id, sample_id=sample_id)
 
@@ -258,6 +274,7 @@ class DonorData:
         if not D.obs_names.is_unique:
             raise ValueError("Donor identifiers in D must be unique.")
         if S is None:
+            _log_missing_labels(C.obs[self.donor_id], "cells", self.donor_id)
             cell_codes = _utils.codes_for(C.obs[self.donor_id], D.obs_names)
             present = np.bincount(cell_codes[cell_codes >= 0], minlength=D.n_obs) > 0
             if not present.any():
@@ -269,6 +286,8 @@ class DonorData:
         else:
             if not S.obs_names.is_unique:
                 raise ValueError("Sample identifiers in S must be unique.")
+            _log_missing_labels(S.obs[self.donor_id], "samples", self.donor_id)
+            _log_missing_labels(C.obs[self.sample_id], "cells", self.sample_id)
             sample_donors = _utils.codes_for(S.obs[self.donor_id], D.obs_names)
             cell_codes = _utils.codes_for(C.obs[self.sample_id], S.obs_names)
             linked = cell_codes >= 0
@@ -603,7 +622,7 @@ class DonorData:
     ) -> DonorData:
         D, S, C = self._D, self._S, self._C
         if not _utils.is_full_slice(D_obs):
-            D = D[D_obs]
+            D = D[_utils.by_label(D_obs, D.obs_names, "donors")]
         if not _utils.is_full_slice(D_var):
             if self._D_is_table:
                 raise IndexError("D is a donor table and has no variables to select.")
@@ -611,9 +630,9 @@ class DonorData:
         if not _utils.is_full_slice(S_obs):
             if S is None:
                 raise IndexError("This DonorData has no sample level.")
-            S = S[S_obs]
+            S = S[_utils.by_label(S_obs, S.obs_names, "samples")]
         if not _utils.is_full_slice(C_obs):
-            C = C[C_obs]
+            C = C[_utils.by_label(C_obs, C.obs_names, "cells")]
         if not _utils.is_full_slice(C_var):
             C = C[:, C_var]
         D, kept = self._sync_var_dims(D, C)

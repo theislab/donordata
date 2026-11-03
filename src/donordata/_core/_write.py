@@ -43,7 +43,7 @@ def _write_anndata_zarr_dense_x_chunked(
     dense_layers = {k: v for k, v in layers.items() if hasattr(v, "ndim") and not sp.issparse(v)}
     sparse_layers = {k: v for k, v in layers.items() if k not in dense_layers}
 
-    placeholder = sp.csr_matrix((adata.n_obs, adata.n_vars), dtype=X.dtype)
+    placeholder = sp.csr_array((adata.n_obs, adata.n_vars), dtype=X.dtype)
     shell = AnnData(
         X=placeholder,
         obs=adata.obs,
