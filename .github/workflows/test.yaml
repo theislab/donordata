@@ -3,8 +3,7 @@ name: Test
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: # every pull request, also one into another branch
   schedule:
     - cron: "0 5 1,15 * *"
   workflow_dispatch:

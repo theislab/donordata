@@ -100,7 +100,7 @@ extra-dependencies = [ "pytest-reportlog" ] # CI turns the log of a failed sched
 
 # stable: every supported Python with current releases.
 # min: lowest Python with the lower bounds of pyproject.toml, pinned by ci/min_deps.py.
-# pre: highest Python with pre-releases and nightly numpy, pandas and scipy.
+# pre: highest Python with pre-releases, nightly numpy, pandas and scipy, and anndata and mudata from git.
 [[tool.hatch.envs.hatch-test.matrix]]
 deps = [ "stable" ]
 python = [ "3.11", "3.12", "3.13", "3.14" ]
@@ -123,6 +123,7 @@ matrix.deps.pre-install-commands = [
 ]
 matrix.deps.post-install-commands = [
   { if = [ "pre" ], value = "uv pip install --pre --upgrade --no-deps --index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple numpy pandas scipy" },
+  { if = [ "pre" ], value = "uv pip install --upgrade --no-deps 'anndata @ git+https://github.com/scverse/anndata.git' 'mudata @ git+https://github.com/scverse/mudata.git'" },
 ]
 
 [tool.ruff]
