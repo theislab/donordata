@@ -561,19 +561,19 @@ class DonorData:
     ) -> DonorData:
         D, S, C = self._D, self._S, self._C
         if not _utils.is_full_slice(D_obs):
-            D = D[D_obs]
+            D = D[_utils.by_label(D_obs, D.obs_names, "donors")]
         if not _utils.is_full_slice(D_var):
             if self._D_is_table:
                 raise IndexError("D is a donor table and has no variables to select.")
-            D = D[:, D_var]
+            D = D[:, _utils.by_label(D_var, D.var_names, "donor variables")]
         if not _utils.is_full_slice(S_obs):
             if S is None:
                 raise IndexError("This DonorData has no sample level.")
-            S = S[S_obs]
+            S = S[_utils.by_label(S_obs, S.obs_names, "samples")]
         if not _utils.is_full_slice(C_obs):
-            C = C[C_obs]
+            C = C[_utils.by_label(C_obs, C.obs_names, "cells")]
         if not _utils.is_full_slice(C_var):
-            C = C[:, C_var]
+            C = C[:, _utils.by_label(C_var, C.var_names, "cell variables")]
         D, kept = self._sync_var_dims(D, C)
         return self._derive(D, S, C, kept)
 
@@ -587,6 +587,9 @@ class DonorData:
         S_obs=slice(None),
     ) -> DonorData:
         """Select along the axes of every level by keyword.
+
+        A boolean ``pandas.Series`` is matched to the axis by name, as in ``filter_donors``, ``filter_samples`` and
+        ``filter_cells``. Boolean arrays and lists are applied by position, in the order of this object.
 
         Parameters
         ----------
@@ -624,7 +627,7 @@ class DonorData:
             return index_tuple
         if n_ellipsis > 1:
             raise IndexError("DonorData only supports a single ellipsis ('...').")
-        position = index_tuple.index(Ellipsis)
+        position = next(i for i, index in enumerate(index_tuple) if index is Ellipsis)  # ``==`` fails on arrays
         n_full = 4 - (len(index_tuple) - 1)
         return index_tuple[:position] + (slice(None),) * n_full + index_tuple[position + 1 :]
 

@@ -84,20 +84,32 @@ def constant_columns(obs: pd.DataFrame, codes: np.ndarray, first: np.ndarray, ex
     return [c for c in obs.columns if c not in exclude and is_constant_within(obs[c], codes, first)]
 
 
-def _align_bool_series(mask: pd.Series, index: pd.Index, what: str) -> pd.Series:
-    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction."""
-    if mask.index.equals(index):
-        return mask
-    labels = mask.index.astype(str)
+def by_label(key, index: pd.Index, what: str):
+    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction.
+
+    Any other selection is returned unchanged.
+    """
+    if not (isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype)):
+        return key
+    if key.index.equals(index):
+        return key.to_numpy(dtype=bool, na_value=False)
+    labels = key.index.astype(str)
     if not labels.is_unique:
         raise ValueError(f"Boolean mask over {what} has duplicate labels and cannot be aligned by index.")
     missing = index.difference(labels)
     if len(missing):
-        raise ValueError(
-            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, "
-            f"for example {list(missing[:3])}. Build the mask from the current object or pass a numpy array."
+        problem = (
+            f"has the default index 0, 1, 2, ... instead of the names of the {what}"
+            if isinstance(key.index, pd.RangeIndex)
+            else f"is missing {len(missing)} of {len(index)} labels, for example {list(missing[:3])}"
         )
-    return pd.Series(mask.array, index=labels).reindex(index)
+        raise ValueError(
+            f"Boolean mask over {what} {problem}, so it cannot be matched by name. "
+            "Build the mask from the current object. Passing ``mask.values`` selects by position instead: "
+            "do that only if the mask is in the order of this object, which can differ from the order of your "
+            "input because DonorData reorders samples and cells."
+        )
+    return pd.Series(key.array, index=labels).reindex(index).to_numpy(dtype=bool, na_value=False)
 
 
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
@@ -108,9 +120,7 @@ def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
         result = key(frame)
     else:
         result = key
-    if isinstance(result, pd.Series) and pd.api.types.is_bool_dtype(result.dtype):
-        result = _align_bool_series(result, frame.index, what).to_numpy(dtype=bool, na_value=False)
-    array = np.asarray(result)
+    array = np.asarray(by_label(result, frame.index, what))
     if array.dtype != bool:
         if array.ndim != 1:
             raise ValueError(f"Cannot select {what} with an array of shape {array.shape}.")
