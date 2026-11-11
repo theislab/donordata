@@ -23,18 +23,19 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dynamic = [ "version" ]
 dependencies = [
-  "anndata>=0.10",
-  "dask[array]",
-  "h5py",
-  "mudata",
-  "numpy",
-  "pandas",
-  "rich",
-  "scipy",
-  "zarr>=3",
+  "anndata>=0.12.2",
+  "dask[array]>=2024.8",
+  "h5py>=3.10",
+  "mudata>=0.3.1",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "rich>=13",
+  "scipy>=1.12",
+  "zarr>=3.1",
 ]
 
 optional-dependencies.dev = [
@@ -59,7 +60,7 @@ optional-dependencies.ehr = [
   "ehrdata>=0.1; python_version>='3.12'",
 ]
 optional-dependencies.ml = [
-  "torch",
+  "torch>=2.2",
 ]
 optional-dependencies.test = [
   "coverage",
@@ -95,6 +96,34 @@ scripts.clean = "git clean -fdX -- {args:docs}"
 
 [tool.hatch.envs.hatch-test]
 features = [ "test", "ml" ]
+extra-dependencies = [ "pytest-reportlog" ] # CI turns the log of a failed scheduled run into a GitHub issue
+
+# stable: every supported Python with current releases.
+# min: lowest Python with the lower bounds of pyproject.toml, pinned by ci/min_deps.py.
+# pre: highest Python with pre-releases and nightly numpy, pandas and scipy.
+[[tool.hatch.envs.hatch-test.matrix]]
+deps = [ "stable" ]
+python = [ "3.11", "3.12", "3.13", "3.14" ]
+
+[[tool.hatch.envs.hatch-test.matrix]]
+deps = [ "min" ]
+python = [ "3.11" ]
+
+[[tool.hatch.envs.hatch-test.matrix]]
+deps = [ "pre" ]
+python = [ "3.14" ]
+
+[tool.hatch.envs.hatch-test.overrides]
+matrix.deps.env-vars = [
+  { if = [ "min" ], key = "UV_CONSTRAINT", value = "ci/min-deps.txt" },
+  { if = [ "pre" ], key = "UV_PRERELEASE", value = "allow" },
+]
+matrix.deps.pre-install-commands = [
+  { if = [ "min" ], value = "python ci/min_deps.py" },
+]
+matrix.deps.post-install-commands = [
+  { if = [ "pre" ], value = "uv pip install --pre --upgrade --no-deps --index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple numpy pandas scipy" },
+]
 
 [tool.ruff]
 line-length = 120
@@ -140,6 +169,11 @@ testpaths = [ "tests" ]
 xfail_strict = true
 addopts = [
   "--import-mode=importlib",
+]
+# Fail on deprecations that donordata's own code triggers, so a coming pandas or numpy change shows up in CI first.
+filterwarnings = [
+  "error::DeprecationWarning:donordata",
+  "error::FutureWarning:donordata",
 ]
 
 [tool.coverage.run]
