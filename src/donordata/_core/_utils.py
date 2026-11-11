@@ -128,11 +128,6 @@ def _is_dask(X) -> bool:
     return type(X).__module__.startswith("dask")
 
 
-def _sparse_array(block):
-    """Turn a sparse matrix, which anndata may return and scipy 2 deprecates, into a sparse array."""
-    return sp.csr_array(block) if sp.issparse(block) else block
-
-
 class RowSubset:
     """Rows and columns of a backed sparse matrix, for the view of an AnnData read from disk."""
 
@@ -142,7 +137,7 @@ class RowSubset:
 
     def to_memory(self):
         order = np.argsort(self.rows, kind="stable")
-        X = _sparse_array(self.matrix[self.rows[order]])[np.argsort(order)]
+        X = sp.csr_array(self.matrix[self.rows[order]])[np.argsort(order)]
         return X if self.columns is None else X[:, self.columns]
 
 
@@ -194,11 +189,11 @@ def _row_blocks(X, codes: np.ndarray):
     if wanted.size > X.shape[0] // 2:
         # most rows are needed: contiguous blocks read faster than a selection of rows
         for batch in _csr_batches(indptr, np.arange(X.shape[0])):
-            block = _sparse_array(X[batch[0] : batch[-1] + 1])
+            block = sp.csr_array(X[batch[0] : batch[-1] + 1])  # anndata returns a csr_matrix
             yield (block if columns is None else block[:, columns]), codes[batch]
     else:
         for batch in _csr_batches(indptr, wanted):
-            block = _sparse_array(X[batch])
+            block = sp.csr_array(X[batch])
             yield (block if columns is None else block[:, columns]), codes[batch]
 
 
@@ -212,7 +207,8 @@ def group_sum(X, codes: np.ndarray, n_groups: int, transform: Callable | None = 
         rows = np.flatnonzero(block_codes >= 0)
         if rows.size == 0:
             continue
-        block = _sparse_array(block)
+        if sp.issparse(block):  # dense blocks stay dense
+            block = sp.csr_array(block)  # a csr_matrix in memory, which scipy 2 deprecates
         if transform is not None:
             block = transform(block.astype(np.float64) if sp.issparse(block) else np.asarray(block, dtype=np.float64))
         elif not sp.issparse(block):
