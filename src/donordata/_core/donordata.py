@@ -20,6 +20,23 @@ from donordata._core.fields import DAnn
 
 logger = logging.getLogger(__name__)
 
+
+def _log_missing_labels(labels: pd.Series, units: str, key: str, shown: int = 10) -> None:
+    """Warn which units are dropped because their ``key`` is missing or a string such as ``"nan"``."""
+    dropped = labels[_utils.is_missing_label(labels)]
+    if dropped.empty:
+        return
+    names = ", ".join(
+        repr(name) if str(name) == str(value) else f"{name!r} ({value!r})"
+        for name, value in dropped.iloc[:shown].items()
+    )
+    more = f" and {len(dropped) - shown} more" if len(dropped) > shown else ""
+    logger.warning(
+        f"Dropping {len(dropped)} {units} with a missing '{key}' (empty, or a value such as NaN, None, 'nan' or 'NA'): "
+        f"{names}{more}. If these are real names, rename them first."
+    )
+
+
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
 _RANK = {"donor": 0, "sample": 1, "cell": 2}
@@ -235,7 +252,9 @@ class DonorData:
     def _match(self, D, S, C, D_is_table: bool, S_is_table: bool) -> None:
         if not D.obs_names.is_unique:
             raise ValueError("Donor identifiers in D must be unique.")
+        _log_missing_labels(D.obs_names.to_series(), "donors", self.donor_id)
         if S is None:
+            _log_missing_labels(C.obs[self.donor_id], "cells", self.donor_id)
             cell_codes = _utils.codes_for(C.obs[self.donor_id], D.obs_names)
             present = np.bincount(cell_codes[cell_codes >= 0], minlength=D.n_obs) > 0
             if not present.any():
@@ -247,6 +266,9 @@ class DonorData:
         else:
             if not S.obs_names.is_unique:
                 raise ValueError("Sample identifiers in S must be unique.")
+            _log_missing_labels(S.obs_names.to_series(), "samples", self.sample_id)
+            _log_missing_labels(S.obs[self.donor_id], "samples", self.donor_id)
+            _log_missing_labels(C.obs[self.sample_id], "cells", self.sample_id)
             sample_donors = _utils.codes_for(S.obs[self.donor_id], D.obs_names)
             cell_codes = _utils.codes_for(C.obs[self.sample_id], S.obs_names)
             linked = cell_codes >= 0
@@ -1433,7 +1455,8 @@ class DonorData:
         Parameters
         ----------
         by
-            Donor table column naming the new unit of every donor.
+            Donor table column naming the new unit of every donor. Donors whose value is missing, or a string
+            such as ``"nan"`` or ``"NA"``, are dropped with a warning, as for donor and sample identifiers.
         func
             Aggregation for donor table columns that vary within a unit, either one pandas
             aggregation for all numeric columns or a dict per column. Without it such columns are
@@ -1449,6 +1472,7 @@ class DonorData:
         DonorData
             With a donor table indexed by the values of ``by``.
         """
+        self = self._with_units(by)
         unit_codes, table = self._units_of(by, func=func, count_key=count_key)
         obsm = {}
         if obsm_func is not None:
@@ -1479,12 +1503,18 @@ class DonorData:
             _copy_matrices(samples, new._S)
         return new
 
+    def _with_units(self, by: str) -> DonorData:
+        """Drop the donors whose ``by`` is missing, as the constructor does for donor and sample identifiers."""
+        if by not in self.obs.columns:
+            raise KeyError(f"'{by}' not found in the donor table.")
+        _log_missing_labels(self.obs[by], "donors", by)
+        missing = _utils.is_missing_label(self.obs[by])
+        return self.filter_donors(~missing) if missing.any() else self
+
     def _units_of(self, by: str, *, func=None, count_key: str | None = None) -> tuple[np.ndarray, pd.DataFrame]:
         if by not in self.obs.columns:
             raise KeyError(f"'{by}' not found in the donor table.")
         units = self.obs[by]
-        if units.isna().any():
-            raise ValueError(f"'{by}' has missing values, every donor needs a unit.")
         unit_codes, unit_names = pd.factorize(pd.Series(_utils.string_labels(units)), sort=True)
         unit_names = pd.Index(np.asarray(unit_names, dtype=str), name=by)
         first = _utils.first_positions(unit_codes, len(unit_names))
@@ -1515,7 +1545,8 @@ class DonorData:
         Parameters
         ----------
         by
-            Donor table column naming the new donor of every current donor.
+            Donor table column naming the new donor of every current donor. Donors whose value is missing, or a string
+            such as ``"nan"`` or ``"NA"``, are dropped with a warning, as for donor and sample identifiers.
         keep_in_samples
             Keep the moved columns in the sample table as well.
 
@@ -1527,6 +1558,7 @@ class DonorData:
         """
         if self._S is not None:
             raise ValueError("This DonorData already has a sample level.")
+        self = self._with_units(by)
         unit_codes, table = self._units_of(by)
         table = table.drop(columns=[f"n_{self.donor_id}"])
         samples = _utils.copy_container(self._D)

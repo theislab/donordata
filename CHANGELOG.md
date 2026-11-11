@@ -28,3 +28,11 @@ First release of DonorData as a package of its own, split from cellink.
 - `donordata.ml.MILDataset` with bags per donor or per sample.
 - Reading of files in the versions 0.1.0 and 0.2.0 written by cellink. Their donor level `G` is read into `D`
   with a warning.
+
+### Fixed
+
+- Donors, samples and cells whose donor or sample identifier is missing are dropped with a warning that names
+  them. Before, a missing identifier became a donor or sample called `"nan"` or `"None"`. A string that stands for
+  a missing value (`""`, `"NA"`, `"N/A"`, `"<NA>"`, `"nan"`, `"NaT"`, `"None"` or `"null"`, in any case) counts as
+  missing too. `nest` and `collapse` drop donors whose grouping value is missing in the same way, instead of
+  raising an error for missing values.

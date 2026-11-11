@@ -47,11 +47,28 @@ def copy_container(container: AnnData | MuData) -> AnnData | MuData:
     return container.copy()
 
 
+# Identifiers that mean "missing", compared case-insensitively: the strings pandas reads as missing.
+MISSING_LABELS = {"", "na", "n/a", "<na>", "nan", "nat", "none", "null"}
+
+
+def is_missing_label(values: pd.Series) -> np.ndarray:
+    """Whether each identifier is missing, or a string that stands for a missing value such as ``"nan"``.
+
+    The single definition of a missing identifier: everything that turns a column into donor or sample
+    identifiers goes through :func:`string_labels`, which uses it.
+    """
+    distinct = values.cat.categories if isinstance(values.dtype, pd.CategoricalDtype) else pd.unique(values)
+    missing_text = [label for label in distinct if str(label).strip().lower() in MISSING_LABELS]
+    return (values.isna() | values.isin(missing_text)).to_numpy()
+
+
 def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
-    """Return identifiers as strings, keeping a categorical encoding when the input has one."""
+    """Return identifiers as strings, with missing ones as NaN, keeping a categorical encoding if the input has one."""
+    missing = is_missing_label(values)
     if isinstance(values.dtype, pd.CategoricalDtype):
-        return values.cat.rename_categories(values.cat.categories.astype(str)).array
-    return values.astype(str).to_numpy()
+        labels = values.cat.rename_categories(values.cat.categories.astype(str))
+        return labels.where(~missing).array
+    return values.astype(str).where(~missing).to_numpy()
 
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
