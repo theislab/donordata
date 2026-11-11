@@ -13,7 +13,7 @@ import zarr
 from anndata import AnnData
 from mudata import MuData
 
-from donordata._core import _spatial, _utils
+from donordata._core import _utils
 from donordata._core._repr import render
 from donordata._core._write import write_group
 from donordata._core.fields import DAnn
@@ -35,9 +35,7 @@ class DonorData:
     :class:`~mudata.MuData`. ``S`` holds one row per sample, such as a time point, tissue or replicate,
     and its ``donor_id`` column names the donor of every sample. ``C`` holds the cells as an AnnData or
     MuData, with the sample of every cell in ``C.obs[sample_id]``, or its donor in
-    ``C.obs[donor_id]`` when there is no sample level. A SpatialData can be passed as ``C``: its table of
-    cells becomes ``C``, and its images, labels, points and shapes stay available in
-    :attr:`spatialdata`.
+    ``C.obs[donor_id]`` when there is no sample level.
 
     On construction, and whenever a level is replaced, only units connected across all levels are
     kept: donors with samples, samples with cells and cells with a known sample or donor. Samples are
@@ -56,9 +54,8 @@ class DonorData:
         column when there is one and from the index otherwise. Optional when ``S`` is given, in which
         case it is a table of the donors named in ``S[donor_id]`` without further columns.
     C
-        Cell-level data as an AnnData, MuData or SpatialData. ``C.obs`` holds the sample of every
-        cell in ``sample_id`` when ``S`` is given, and the donor of every cell in ``donor_id``
-        otherwise. For a SpatialData these columns are read from the table of cells.
+        Cell-level data as an AnnData or MuData. ``C.obs`` holds the sample of every cell in
+        ``sample_id`` when ``S`` is given, and the donor of every cell in ``donor_id`` otherwise.
     donor_id
         Name of the donor identifier.
     S
@@ -75,9 +72,6 @@ class DonorData:
         Donor-aligned matrices to add to :attr:`obsm`, with rows in the row order of ``D``.
     obsp
         Donor-by-donor matrices to add to :attr:`obsp`, with rows and columns in the row order of ``D``.
-    table_name
-        Table of a SpatialData ``C`` that holds the cells. Defaults to its only table, or to the
-        table named ``"table"``.
 
     Examples
     --------
@@ -87,8 +81,6 @@ class DonorData:
     >>> dd.filter_donors("age > 60").filter_donors_by_cells(20, groupby="cell_type")
     >>> dd.get_df(["age", "cell_type", "CD14"], level="cell")
     """
-
-    _spatial = None
 
     def __init__(
         self,
@@ -102,18 +94,13 @@ class DonorData:
         uns: dict | None = None,
         obsm: dict | None = None,
         obsp: dict | None = None,
-        table_name: str | None = None,
     ):
-        if _spatial.is_spatialdata(C):
-            name, table = _spatial.table_of(C, table_name)
-            self._spatial = (C, name)
-            C = table
         if (S is None) != (sample_id is None):
             raise TypeError("S and sample_id must be given together.")
         if D is None and S is None:
             raise TypeError("Pass the donor-level data as D, or a sample table S that names the donor of every sample.")
         if not isinstance(C, AnnData | MuData):
-            raise TypeError(f"C must be an AnnData, MuData or SpatialData object, got {type(C).__name__}.")
+            raise TypeError(f"C must be an AnnData or MuData object, got {type(C).__name__}.")
         self.donor_id = donor_id
         self.sample_id = sample_id
         cell_key = sample_id if S is not None else donor_id
@@ -146,7 +133,6 @@ class DonorData:
         sample_id: str | None = None,
         columns: Sequence[str] | None = None,
         keep_in_cells: bool = False,
-        table_name: str | None = None,
     ) -> DonorData:
         """Split a cell-level object into tables for donors, optionally samples, and the cells.
 
@@ -158,8 +144,7 @@ class DonorData:
         Parameters
         ----------
         adata
-            Cell-level data with the donor of every cell in ``adata.obs[donor_id]``. For a
-            SpatialData the columns are read from its table of cells.
+            Cell-level data with the donor of every cell in ``adata.obs[donor_id]``.
         donor_id
             Column of ``adata.obs`` with donor identifiers.
         sample_id
@@ -171,26 +156,19 @@ class DonorData:
         keep_in_cells
             Keep the moved columns in ``C.obs`` as well. Without it ``C`` is a shallow copy of
             ``adata`` with the columns removed, sharing all matrices with ``adata``.
-        table_name
-            Table of a SpatialData ``adata`` that holds the cells.
 
         Returns
         -------
         DonorData
             With units sorted by their identifier, or in category order for categorical columns.
         """
-        if _spatial.is_spatialdata(adata):
-            name, table = _spatial.table_of(adata, table_name)
-            dd = cls.from_anndata(table, donor_id, sample_id=sample_id, columns=columns, keep_in_cells=keep_in_cells)
-            dd._spatial = (adata, name)
-            return dd
         obs = adata.obs
         for key in (donor_id, sample_id):
             if key is not None and key not in obs.columns:
                 raise ValueError(f"'{key}' not found in adata.obs")
         donor_codes, donors = pd.factorize(pd.Series(_utils.string_labels(obs[donor_id])), sort=True)
         donor_first = _utils.first_positions(donor_codes, len(donors))
-        ids = ({donor_id} if sample_id is None else {donor_id, sample_id}) | _spatial.linking_columns(adata)
+        ids = {donor_id} if sample_id is None else {donor_id, sample_id}
         if sample_id is None:
             unit_codes, unit_first = donor_codes, donor_first
         else:
@@ -334,7 +312,6 @@ class DonorData:
         new.sample_id = self.sample_id
         new._var_dims_to_sync = list(self._var_dims_to_sync if var_dims_to_sync is None else var_dims_to_sync)
         new.uns = dict(self.uns)
-        new._spatial = self._spatial
         new._match(D, S, C, self._D_is_table, self._S_is_table)
         return new
 
@@ -369,7 +346,6 @@ class DonorData:
         new._S = None if self._S is None else self._S.copy()
         new._C = _utils.copy_container(self._C)
         new.uns = _copy.deepcopy(self.uns)
-        new._spatial = self._spatial
         return new
 
     @property
@@ -409,30 +385,12 @@ class DonorData:
 
     @C.setter
     def C(self, value: AnnData | MuData) -> None:
-        if _spatial.is_spatialdata(value):
-            name, table = _spatial.table_of(value, None)
-            self._spatial = (value, name)
-            value = table
         if not isinstance(value, AnnData | MuData):
             raise TypeError(f"C must be an AnnData or MuData object, got {type(value).__name__}.")
         key = self.sample_id or self.donor_id
         if key not in value.obs.columns:
             raise ValueError(f"'{key}' not found in C.obs")
         self._match(self._D, self._S, value, self._D_is_table, self._S_is_table)
-
-    @property
-    def spatialdata(self):
-        """The SpatialData the cells come from, with the current ``C`` as its table of cells.
-
-        ``None`` when ``C`` was not given as a SpatialData. Images, labels, points and shapes are
-        shared with the SpatialData that was passed, so selecting cells changes the table but keeps
-        the spatial elements as they are.
-        """
-        if self._spatial is None:
-            return None
-        sdata, name = self._spatial
-        self._actualize("cell")
-        return _spatial.with_table(sdata, name, self._C)
 
     @property
     def D_type(self) -> Literal["table", "anndata", "mudata"]:
@@ -1504,9 +1462,7 @@ class DonorData:
         cells = _utils.shallow_with_obs(self._C, self._C.obs.assign(**{by: cell_units}))
         synced = [k for k in self._var_dims_to_sync if k in obsm]
         if self._S is None:
-            new = DonorData(D=table, C=cells, donor_id=by, obsm=obsm, uns=dict(self.uns), var_dims_to_sync=synced)
-            new._spatial = self._spatial
-            return new
+            return DonorData(D=table, C=cells, donor_id=by, obsm=obsm, uns=dict(self.uns), var_dims_to_sync=synced)
         samples = self._S.copy()
         samples.obs[by] = np.asarray(table.index[unit_codes[self.sample_donor_codes]], dtype=str)
         new = DonorData(
@@ -1521,7 +1477,6 @@ class DonorData:
         )
         if self._S_is_table:
             _copy_matrices(samples, new._S)
-        new._spatial = self._spatial
         return new
 
     def _units_of(self, by: str, *, func=None, count_key: str | None = None) -> tuple[np.ndarray, pd.DataFrame]:
@@ -1582,7 +1537,6 @@ class DonorData:
         new = DonorData(D=table, S=sample_side, C=self._C, donor_id=by, sample_id=self.donor_id, uns=dict(self.uns))
         if self._D_is_table:
             _copy_matrices(samples, new._S)
-        new._spatial = self._spatial
         return new
 
     def flatten(self) -> DonorData:
@@ -1615,7 +1569,6 @@ class DonorData:
         new = DonorData(D=side, C=self._C, donor_id=self.sample_id, uns=dict(self.uns))
         if self._S_is_table:
             _copy_matrices(samples, new._D)
-        new._spatial = self._spatial
         return new
 
     def _strata(self, stratify) -> np.ndarray:
@@ -1733,8 +1686,6 @@ class DonorData:
         path
             Destination, conventionally ending in ``.dd.h5``.
         """
-        if self._spatial is not None:
-            raise ValueError("Cells from a SpatialData can only be written to a Zarr store, use write_zarr_dd.")
         with h5py.File(str(path), "w") as f:
             write_group(self, f)
 

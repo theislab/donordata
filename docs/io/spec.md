@@ -30,8 +30,7 @@ The root group identifies the file and names the identifier columns.
 {'donor_id': 'patient_id', 'encoding-type': 'donordata', 'encoding-version': '0.3.0', 'sample_id': 'sample_id', 'var_dims_to_sync': []}
 ```
 
-`sample_id` is only present when the object has a sample level, and `spatialdata_table` only when the cells come from
-a SpatialData, where it names the table of cells. `var_dims_to_sync` lists keys of the donor level
+`sample_id` is only present when the object has a sample level. `var_dims_to_sync` lists keys of the donor level
 `obsm` whose columns follow the variables of `C`. Unstructured annotations of the object are stored as `uns/<key>`
 next to the levels.
 
@@ -75,22 +74,6 @@ An EHRData donor or sample level is stored the way ehrdata stores it: an AnnData
 with the time axis as a dataframe in `D/tem`. A level with a `tem` entry is read back as an EHRData when ehrdata is
 installed.
 
-### SpatialData
-
-Cells given as a SpatialData are stored in `C` in the Zarr format of spatialdata, with their images, labels, points,
-shapes and tables, so `spatialdata.read_zarr("cohort.dd.zarr/C")` reads them without DonorData. The group carries
-the `spatialdata_attrs` of spatialdata, and the root attribute `spatialdata_table` names the table that holds the
-cells. SpatialData can only be stored in Zarr stores.
-
-```python-console
->>> import zarr
->>> f = zarr.open("spatial.dd.zarr")
->>> dict(f.attrs)["spatialdata_table"]
-'table'
->>> list(f["C"].keys())
-['shapes', 'tables']
-```
-
 ## `obsm_columns`
 
 AnnData writes a dataframe column by column. A pseudobulk profile with one column per gene would therefore become
@@ -120,7 +103,7 @@ checks these rules on an object in memory and raises {class}`donordata.DonorData
 
 | Version | Changes |
 |---|---|
-| `0.3.0` | Levels `D`, `S` and `C`; table levels with `donordata-table`; EHRData levels with `tem`; SpatialData cells; `obsm_columns`; MuData levels in Zarr stores |
+| `0.3.0` | Levels `D`, `S` and `C`; table levels with `donordata-table`; EHRData levels with `tem`; `obsm_columns`; MuData levels in Zarr stores |
 | `0.2.0` | Donor level `G`, which could also be a dataframe with `obsm` and `obsp` at the root |
 | `0.1.0` | Donor level `G` and cells `C`, both AnnData or MuData |
 

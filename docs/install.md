@@ -21,12 +21,11 @@ The PyTorch dataset in {mod}`donordata.ml` needs the `ml` extra:
 pip install "donordata[ml] @ git+https://github.com/theislab/donordata"
 ```
 
-Donor or sample levels stored as an EHRData need [ehrdata](https://ehrdata.readthedocs.io), and cells given as a
-SpatialData need [spatialdata](https://spatialdata.scverse.org). Both are installed with the `ehr` and `spatial`
-extras:
+Donor or sample levels stored as an EHRData need [ehrdata](https://ehrdata.readthedocs.io), which is installed with
+the `ehr` extra:
 
 ```console
-pip install "donordata[ehr,spatial] @ git+https://github.com/theislab/donordata"
+pip install "donordata[ehr] @ git+https://github.com/theislab/donordata"
 ```
 
 ## Troubleshooting

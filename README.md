@@ -29,11 +29,10 @@
 DonorData
   .D             donors, one row per donor (a DataFrame of donor labels, or AnnData, MuData, EHRData)
   .S             samples, one row per sample, optional (DataFrame, AnnData or EHRData)
-  .C             cells (AnnData or MuData, or the table of cells of a SpatialData)
+  .C             cells (AnnData or MuData)
   .obsm          matrices aligned to the donors, such as embeddings or pseudobulk profiles
   .obsp          donor by donor matrices, such as distances
   .uns           unstructured annotations
-  .spatialdata   the SpatialData the cells come from, with the current cells as its table
 ```
 
 `C.obs[donor_id]` names the donor of every cell. With a sample level, `C.obs[sample_id]` names the sample of every
@@ -61,13 +60,6 @@ the genotypes that [cellink](https://github.com/theislab/cellink) analyses:
 
 ```python
 dd = DonorData(D=patients, C=adata, donor_id="patient")
-```
-
-A SpatialData works in the same way: its table of cells becomes `C`, and its images, labels, points and shapes stay
-available in `dd.spatialdata`:
-
-```python
-dd = DonorData.from_anndata(sdata, donor_id="patient")
 ```
 
 With several samples per donor, `sample_id` adds the sample table `S`:

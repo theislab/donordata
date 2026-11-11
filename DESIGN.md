@@ -9,11 +9,8 @@ This document outlines design considerations and some technical details about th
 merged into one matrix. This follows the container approach of `MuData`, which keeps every modality as an `AnnData`.
 A donor table plays a similar role to the global `obs` of a `MuData`, one level up. A donor can be any unit that groups cells, for example a patient, a target gene in a CRISPR screen or a compound in a drug screen.
 
-The other core scverse formats fit the same scheme. A `SpatialData`, the scverse format for spatial omics, can hold
-the cells: its table of cells becomes `C`, so every operation on cells works on spatial data as well, and its images,
-labels, points and shapes stay attached and come back together with the current table as `dd.spatialdata`. An
-`EHRData` from ehrdata, an `AnnData` with a time axis, can be the donor or the sample level, for example to hold the
-clinical record of every patient next to the cells.
+An `EHRData` from ehrdata, an `AnnData` with a time axis, fits the same scheme: it can be the donor or the sample
+level, for example to hold the clinical record of every patient next to the cells.
 
 ## The sample level
 
@@ -37,5 +34,4 @@ or a single pass over integer codes. The order is restored on construction and w
 ## Storage
 
 A `DonorData` is written with one group per level, `D`, `S` and `C`, each with the `AnnData` or `MuData` encoding, so
-every level can be read with AnnData alone. A `SpatialData` level is written in its own Zarr format, so it can be
-read with spatialdata alone. See the [specification](docs/io/spec.md) for the full layout.
+every level can be read with AnnData alone. See the [specification](docs/io/spec.md) for the full layout.

@@ -136,17 +136,7 @@ def _read_level(f, key: str, lazy: bool, var_columns=None):
     return container, None
 
 
-def _read_cells(f, path: str | None, lazy: bool):
-    if "spatialdata_attrs" in f["C"].attrs:
-        try:
-            from spatialdata import read_zarr
-        except ImportError as e:
-            raise ImportError("The cells of this file are a SpatialData, install spatialdata to read them.") from e
-        return read_zarr(f"{path}/C")
-    return _read_side(f["C"], lazy)
-
-
-def _read_dd(f, lazy: bool = False, path: str | None = None, var_columns=None) -> DonorData:
+def _read_dd(f, lazy: bool = False, var_columns=None) -> DonorData:
     encoding_type = f.attrs.get("encoding-type")
     if encoding_type is not None and encoding_type != DONORDATA_ENCODING_TYPE:
         raise ValueError(
@@ -170,7 +160,7 @@ def _read_dd(f, lazy: bool = False, path: str | None = None, var_columns=None) -
         )
     D, D_shell = _read_level(f, "D" if "D" in f else "G", lazy, var_columns)
     S, S_shell = _read_level(f, "S", lazy) if "S" in f else (None, None)
-    C = _read_cells(f, path, lazy)
+    C = _read_side(f["C"], lazy)
     if D_shell is not None:
         obsm, obsp = dict(D_shell.obsm), dict(D_shell.obsp)
     else:
@@ -189,7 +179,6 @@ def _read_dd(f, lazy: bool = False, path: str | None = None, var_columns=None) -
         uns=uns,
         obsm=obsm,
         obsp=obsp,
-        table_name=f.attrs.get("spatialdata_table"),
     )
     if S_shell is not None:
         _copy_matrices(S_shell, dd._S)
@@ -230,7 +219,7 @@ def read_zarr_dd(path: str | Path, var_columns: list[str] | None = None) -> Dono
     -------
     DonorData
     """
-    return _read_dd(zarr.open(str(path), mode="r"), lazy=True, path=str(path), var_columns=var_columns)
+    return _read_dd(zarr.open(str(path), mode="r"), lazy=True, var_columns=var_columns)
 
 
 def read_dd(path: str | Path, fmt: str | None = None) -> DonorData:

@@ -16,8 +16,6 @@ First release of DonorData as a package of its own, split from cellink.
 
 - `DonorData` with a donor level `D`, an optional sample level `S` and the cells `C`, where each level can be a
   table, an `AnnData`, a `MuData`, or for donors and samples an `EHRData`.
-- Cells given as a `SpatialData`: its table of cells becomes `C`, and `dd.spatialdata` returns the SpatialData with
-  the current cells. SpatialData cells are written to Zarr stores in the spatialdata format.
 - Selection at every level with `filter_donors`, `filter_samples`, `filter_cells`, `filter_donors_by_cells` and
   `subsample_cells`, and `coverage` and `complete_cases` for `MuData` cells with assays on different cells.
 - `get_df`, `infer_levels`, `push_obs`, `pull_obs`, `push_obsm` and `to_anndata` to move information between

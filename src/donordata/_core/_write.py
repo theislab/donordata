@@ -185,11 +185,7 @@ def write_group(dd, f, zarr_path: str | None = None, x_chunks=None) -> None:
     _write_level(f, "D", dd._D, dd._D_is_table, is_zarr, zarr_path, chunks_for("D"))
     if dd._S is not None:
         _write_level(f, "S", dd._S, dd._S_is_table, is_zarr, zarr_path, chunks_for("S"))
-    if dd._spatial is not None:
-        dd.spatialdata.write(f"{zarr_path}/C", update_sdata_path=False)
-        f.attrs["spatialdata_table"] = dd._spatial[1]
-    else:
-        _write_level(f, "C", dd._C, False, is_zarr, zarr_path, chunks_for("C"))
+    _write_level(f, "C", dd._C, False, is_zarr, zarr_path, chunks_for("C"))
 
     f.attrs["encoding-type"] = DONORDATA_ENCODING_TYPE
     f.attrs["encoding-version"] = DONORDATA_ENCODING_VERSION

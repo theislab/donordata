@@ -61,9 +61,6 @@ optional-dependencies.ehr = [
 optional-dependencies.ml = [
   "torch",
 ]
-optional-dependencies.spatial = [
-  "spatialdata",
-]
 optional-dependencies.test = [
   "coverage",
   "ehrdata>=0.1; python_version>='3.12'",

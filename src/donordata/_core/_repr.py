@@ -9,8 +9,6 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from donordata._core import _spatial
-
 HIGHLIGHT_COLOR = "bold deep_pink2"
 _SLOTS = ("obs", "var", "uns", "obsm", "varm", "layers", "obsp", "varp")
 _HTML_FORMAT = (
@@ -86,11 +84,7 @@ def render(dd, html: bool = False) -> str:
         unit = "donor"
         cell_keys = {dd.donor_id}
     cell_header = f"C (cells, {counts.min():,}..{counts.max():,} per {unit})"
-    cell_lines = side_lines(dd.C, _kind(dd.C, False), cell_keys)
-    if dd._spatial is not None:
-        sdata, name = dd._spatial
-        cell_lines.insert(1, Text(f"    table '{name}' of a SpatialData with {_spatial.describe(sdata)}"))
-    columns.append((cell_header, cell_lines))
+    columns.append((cell_header, side_lines(dd.C, _kind(dd.C, False), cell_keys)))
 
     n_rows = max(len(lines) for _, lines in columns)
     width = 50 if len(columns) == 2 else 40

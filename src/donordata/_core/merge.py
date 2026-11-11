@@ -76,11 +76,6 @@ def concat(
         keys = [str(i) for i in range(len(dds))]
     if not dds:
         raise ValueError("Nothing to concatenate.")
-    if any(dd._spatial is not None for dd in dds):
-        raise NotImplementedError(
-            "concat does not combine the spatial elements of SpatialData cells. Concatenate the SpatialData "
-            "objects with spatialdata.concatenate and build a new DonorData from the result."
-        )
     donor_id, sample_id = dds[0].donor_id, dds[0].sample_id
     if any(dd.donor_id != donor_id or dd.sample_id != sample_id for dd in dds):
         raise ValueError("All inputs must share the same donor_id and sample_id.")
