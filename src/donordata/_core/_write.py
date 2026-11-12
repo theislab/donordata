@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import dask.array as da
 import numpy as np
 import pandas as pd
@@ -108,46 +110,57 @@ def pack_obsm(obsm) -> tuple[dict, dict[str, np.ndarray]]:
     return entries, columns
 
 
-EHRDATA_X_KEY = "_ed_ondisk_X"
-EHRDATA_LAYER_PREFIX = "_ed_ondisk_layers_"
+EHRDATA_MIN_VERSION = "0.6"
 
 
-def _dense(array):
-    return array.todense() if hasattr(array, "todense") and not sp.issparse(array) else np.asarray(array)
+def ehrdata_io(action: str):
+    """Return ``ehrdata.io``, raising an ImportError unless it has ``write_elem`` and ``read_elem``."""
+    try:
+        import ehrdata.io as module
+    except ImportError as e:
+        raise ImportError(
+            f"{action} needs ehrdata>={EHRDATA_MIN_VERSION}, install it with `pip install donordata[ehr]`."
+        ) from e
+    if not hasattr(module, "write_elem"):
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            installed = f"ehrdata {version('ehrdata')} is installed"
+        except PackageNotFoundError:
+            installed = "an older ehrdata is installed"
+        raise ImportError(
+            f"{action} needs ehrdata>={EHRDATA_MIN_VERSION}, which provides `ehrdata.io.write_elem` and "
+            f"`ehrdata.io.read_elem`; {installed}."
+        )
+    return module
 
 
 def write_ehrdata(f, key: str, edata, obsm: dict | None = None) -> None:
-    """Write an EHRData as ehrdata does, an AnnData group ``key`` with the time axis in ``key/tem``.
+    """Write an EHRData into a new group ``key`` with :func:`ehrdata.io.write_elem`, optionally with another ``obsm``."""
+    if obsm is not None:
+        edata = type(edata)(
+            X=edata.X,
+            obs=edata.obs,
+            var=edata.var,
+            tem=edata.tem,
+            uns=dict(edata.uns),
+            obsm=obsm,
+            varm=dict(edata.varm),
+            obsp=dict(edata.obsp),
+            varp=dict(edata.varp),
+            layers={k: v for k, v in edata.layers.items() if k is not None},
+        )
+    ehrdata_io(f"Writing the EHRData level {key}").write_elem(f, key, edata)
 
-    AnnData only stores two dimensional ``X`` and layers, so three dimensional ones are moved to
-    ``obsm`` under the keys that ehrdata reserves for them, and the group can be read by anndata.
-    """
-    obsm = dict(edata.obsm) if obsm is None else dict(obsm)
-    X = edata.X
-    if getattr(X, "ndim", 2) == 3:
-        obsm[EHRDATA_X_KEY] = _dense(X)
-        X = None
-    layers = {}
-    for name, layer in edata.layers.items():
-        if name is None:
-            continue
-        if getattr(layer, "ndim", 2) == 3:
-            obsm[f"{EHRDATA_LAYER_PREFIX}{name}"] = _dense(layer)
-        else:
-            layers[name] = layer
-    base = AnnData(
-        X=X,
-        obs=edata.obs,
-        var=edata.var,
-        uns=dict(edata.uns),
-        obsm=obsm,
-        varm=dict(edata.varm),
-        obsp=dict(edata.obsp),
-        varp=dict(edata.varp),
-        layers=layers,
-    )
-    write_elem(f, key, base)
-    write_elem(f[key], "tem", edata.tem)
+
+def slots_group(group):
+    """The group holding the AnnData slots of a level, ``anndata`` for an EHRData in a Zarr store."""
+    return group["anndata"] if isinstance(group, zarr.Group) and is_ehrdata_group(group) else group
+
+
+def is_ehrdata_group(group) -> bool:
+    """Whether ``group`` carries ehrdata's stamp, in its HDF5 or its Zarr form."""
+    return "ehrdata" in (group.attrs.get("ehrdata-encoding-type"), group.attrs.get("encoding-type"))
 
 
 def _write_level(f, key: str, container, is_table: bool, is_zarr: bool, zarr_path, chunks) -> None:
@@ -159,7 +172,13 @@ def _write_level(f, key: str, container, is_table: bool, is_zarr: bool, zarr_pat
         write_elem(f, key, AnnData(obs=container.obs, obsm=obsm, obsp=dict(container.obsp)))
         f[key].attrs["donordata-table"] = True
     elif is_ehrdata(container):
-        write_ehrdata(f, key, container, obsm=obsm)
+        if chunks is not None:
+            warnings.warn(
+                f"x_chunks does not apply to the EHRData level {key}, which ehrdata writes with its own chunks.",
+                UserWarning,
+                stacklevel=4,
+            )
+        write_ehrdata(f, key, container, obsm=obsm if columns else None)
     else:
         if columns:
             container = shallow_with_obs(container, container.obs, obsm=obsm)
@@ -168,7 +187,7 @@ def _write_level(f, key: str, container, is_table: bool, is_zarr: bool, zarr_pat
         else:
             write_elem(f, key, container)
     if columns:
-        group = f[key].require_group("obsm_columns")
+        group = slots_group(f[key]).require_group("obsm_columns")
         for name, names in columns.items():
             write_elem(group, name, names)
 
@@ -177,15 +196,16 @@ def write_group(dd, f, zarr_path: str | None = None, x_chunks=None) -> None:
     """Write a DonorData into an open HDF5 file or Zarr group."""
     is_zarr = isinstance(f, zarr.Group)
 
-    def chunks_for(key):
+    def chunks_for(key, container):
         if isinstance(x_chunks, dict):
             return x_chunks.get(key)
-        return x_chunks
+        # a shared shape is meant for the other levels
+        return None if is_ehrdata(container) else x_chunks
 
-    _write_level(f, "D", dd._D, dd._D_is_table, is_zarr, zarr_path, chunks_for("D"))
+    _write_level(f, "D", dd._D, dd._D_is_table, is_zarr, zarr_path, chunks_for("D", dd._D))
     if dd._S is not None:
-        _write_level(f, "S", dd._S, dd._S_is_table, is_zarr, zarr_path, chunks_for("S"))
-    _write_level(f, "C", dd._C, False, is_zarr, zarr_path, chunks_for("C"))
+        _write_level(f, "S", dd._S, dd._S_is_table, is_zarr, zarr_path, chunks_for("S", dd._S))
+    _write_level(f, "C", dd._C, False, is_zarr, zarr_path, chunks_for("C", dd._C))
 
     f.attrs["encoding-type"] = DONORDATA_ENCODING_TYPE
     f.attrs["encoding-version"] = DONORDATA_ENCODING_VERSION

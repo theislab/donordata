@@ -15,7 +15,7 @@ from mudata import MuData
 
 from donordata._core import _utils
 from donordata._core._repr import render
-from donordata._core._write import write_group
+from donordata._core._write import is_ehrdata, write_group
 from donordata._core.fields import DAnn
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,8 @@ class DonorData:
             raise TypeError("Pass the donor-level data as D, or a sample table S that names the donor of every sample.")
         if not isinstance(C, AnnData | MuData):
             raise TypeError(f"C must be an AnnData or MuData object, got {type(C).__name__}.")
+        if is_ehrdata(C):
+            raise TypeError("C must be an AnnData or MuData object; an EHRData belongs to D or S.")
         self.donor_id = donor_id
         self.sample_id = sample_id
         cell_key = sample_id if S is not None else donor_id
@@ -1699,7 +1701,9 @@ class DonorData:
         x_chunks
             Chunk shape for a dense ``X`` and dense layers, for example ``(4096, 4096)``, or a dict
             ``{"D": ..., "C": ...}`` to set the levels independently. Without it a dask array keeps
-            its own chunks and a plain array is chunked with at most 4096 entries per axis.
+            its own chunks and a plain array is chunked with at most 4096 entries per axis. An EHRData
+            level is written by ehrdata with its own chunks, and ``x_chunks`` for it is ignored with a
+            warning.
         """
         f = zarr.open(str(path), mode="w")
         write_group(self, f, zarr_path=str(path), x_chunks=x_chunks)

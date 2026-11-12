@@ -21,8 +21,8 @@ The PyTorch dataset in {mod}`donordata.ml` needs the `ml` extra:
 pip install "donordata[ml] @ git+https://github.com/theislab/donordata"
 ```
 
-Donor or sample levels stored as an EHRData need [ehrdata](https://ehrdata.readthedocs.io), which is installed with
-the `ehr` extra:
+Donor or sample levels stored as an EHRData need [ehrdata](https://ehrdata.readthedocs.io) 0.6 or later, which is
+installed with the `ehr` extra:
 
 ```console
 pip install "donordata[ehr] @ git+https://github.com/theislab/donordata"

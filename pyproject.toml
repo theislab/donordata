@@ -49,25 +49,25 @@ optional-dependencies.doc = [
   "matplotlib",
   "myst-nb>=1.1",
   "setuptools",
+  "sphinx>=4",
   "sphinx-autodoc-typehints",
   "sphinx-book-theme>=1",
   "sphinx-copybutton",
-  "sphinx>=4",
   "sphinxext-opengraph",
 ]
 optional-dependencies.ehr = [
-  "ehrdata>=0.1; python_version>='3.12'",
+  "ehrdata>=0.6; python_version>='3.12'",
 ]
 optional-dependencies.ml = [
   "torch",
 ]
 optional-dependencies.test = [
   "coverage",
-  "ehrdata>=0.1; python_version>='3.12'",
+  "ehrdata>=0.6; python_version>='3.12'",
   "pytest",
 ]
 optional-dependencies.tutorials = [
-  "ehrdata>=0.1; python_version>='3.12'",
+  "ehrdata>=0.6; python_version>='3.12'",
   "matplotlib",
   "scanpy",
   "scikit-learn",
