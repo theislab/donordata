@@ -1,13 +1,17 @@
+import warnings
+
 import h5py
 import mudata as md
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.sparse as sp
 import zarr
 from anndata.io import read_elem
 
 import donordata
 from donordata import DonorData, read_dd, read_h5_dd, read_zarr_dd, validate
+from donordata._core import _utils
 
 if hasattr(md, "set_options"):
     md.set_options(pull_on_update=False)
@@ -305,3 +309,17 @@ def test_ehrdata_sample_level(tmp_path, dd3, ehrdata):
     loaded = read_dd(path)
     assert type(loaded.S).__name__ == "EHRData"
     np.testing.assert_allclose(loaded.S.layers["tem_data"], sub.S.layers["tem_data"])
+
+
+def test_group_sum_of_a_sparse_matrix_matches_dense_without_deprecations():
+    dense = np.arange(12.0).reshape(4, 3)
+    codes = np.array([0, 1, 0, -1])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # scipy 2 deprecates building a csr_matrix
+        matrix = sp.csr_matrix(dense)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for transform in (None, np.log1p):
+            expected = _utils.group_sum(dense, codes, 2, transform)
+            np.testing.assert_allclose(_utils.group_sum(matrix, codes, 2, transform), expected)
+            np.testing.assert_allclose(_utils.group_sum(sp.csr_array(dense), codes, 2, transform), expected)

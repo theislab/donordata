@@ -16,7 +16,7 @@ def _stack_rows(values: list):
     if all(isinstance(v, pd.DataFrame) for v in values):
         return pd.concat(values, axis=0, join="inner")
     if any(sp.issparse(v) for v in values):
-        return sp.vstack([sp.csr_matrix(v) for v in values])
+        return sp.vstack([sp.csr_array(v) for v in values])
     return np.concatenate([np.asarray(v) for v in values], axis=0)
 
 
