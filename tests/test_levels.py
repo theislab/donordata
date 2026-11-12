@@ -1,13 +1,17 @@
+import warnings
+
 import h5py
 import mudata as md
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.sparse as sp
 import zarr
 from anndata.io import read_elem
 
 import donordata
 from donordata import DonorData, read_dd, read_h5_dd, read_zarr_dd, validate
+from donordata._core import _utils
 
 if hasattr(md, "set_options"):
     md.set_options(pull_on_update=False)
@@ -308,12 +312,6 @@ def test_ehrdata_sample_level(tmp_path, dd3, ehrdata):
 
 
 def test_group_sum_of_a_sparse_matrix_matches_dense_without_deprecations():
-    import warnings
-
-    import scipy.sparse as sp
-
-    from donordata._core import _utils
-
     dense = np.arange(12.0).reshape(4, 3)
     codes = np.array([0, 1, 0, -1])
     with warnings.catch_warnings():
