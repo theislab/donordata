@@ -47,11 +47,28 @@ def copy_container(container: AnnData | MuData) -> AnnData | MuData:
     return container.copy()
 
 
+# Identifiers that mean "missing", compared case-insensitively: the strings pandas reads as missing.
+MISSING_LABELS = {"", "na", "n/a", "<na>", "nan", "nat", "none", "null"}
+
+
+def is_missing_label(values: pd.Series) -> np.ndarray:
+    """Whether each identifier is missing, or a string that stands for a missing value such as ``"nan"``.
+
+    The single definition of a missing identifier: everything that turns a column into donor or sample
+    identifiers goes through :func:`string_labels`, which uses it.
+    """
+    distinct = values.cat.categories if isinstance(values.dtype, pd.CategoricalDtype) else pd.unique(values)
+    missing_text = [label for label in distinct if str(label).strip().lower() in MISSING_LABELS]
+    return (values.isna() | values.isin(missing_text)).to_numpy()
+
+
 def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
-    """Return identifiers as strings, keeping a categorical encoding when the input has one."""
+    """Return identifiers as strings, with missing ones as NaN, keeping a categorical encoding if the input has one."""
+    missing = is_missing_label(values)
     if isinstance(values.dtype, pd.CategoricalDtype):
-        return values.cat.rename_categories(values.cat.categories.astype(str)).array
-    return values.astype(str).to_numpy()
+        labels = values.cat.rename_categories(values.cat.categories.astype(str))
+        return labels.where(~missing).array
+    return values.astype(str).where(~missing).to_numpy()
 
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
@@ -84,36 +101,45 @@ def constant_columns(obs: pd.DataFrame, codes: np.ndarray, first: np.ndarray, ex
     return [c for c in obs.columns if c not in exclude and is_constant_within(obs[c], codes, first)]
 
 
+def align_series(values: pd.Series, index: pd.Index, what: str, subject: str) -> pd.Series:
+    """Reorder a Series to ``index`` by label, since the levels may be reordered on construction.
+
+    The single rule for every Series that holds one value per donor, sample or cell: it is matched by name.
+    Labels beyond ``index`` are ignored. ``subject`` names the Series in the error messages.
+    """
+    advice = (
+        "Build it from the current object. Passing its ``.values`` selects by position instead: "
+        "do that only if they are in the order of this object, which can differ from the order of your "
+        "input because DonorData reorders samples and cells."
+    )
+    if isinstance(values.index, pd.RangeIndex):
+        # Also when the names are "0", "1", ...: the values may be in the order of the input or of this object.
+        raise ValueError(
+            f"{subject} has the default index 0, 1, 2, ... instead of the names of the {what}, "
+            f"so it cannot be matched by name. {advice}"
+        )
+    if values.index.equals(index):
+        return values
+    labels = values.index.astype(str)
+    if not labels.is_unique:
+        raise ValueError(f"{subject} has duplicate labels, so it cannot be matched by name.")
+    missing = index.difference(labels)
+    if len(missing):
+        raise ValueError(
+            f"{subject} is missing {len(missing)} of {len(index)} labels, for example "
+            f"{list(missing[:3])}, so it cannot be matched by name. {advice}"
+        )
+    return pd.Series(values.array, index=labels).reindex(index)
+
+
 def by_label(key, index: pd.Index, what: str):
-    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction.
+    """Align a boolean Series to ``index`` by label, see :func:`align_series`.
 
     A missing entry (NA) counts as ``False``. Any other selection is returned unchanged.
     """
     if not (isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype)):
         return key
-    advice = (
-        "Build the mask from the current object. Passing ``mask.values`` selects by position instead: "
-        "do that only if the mask is in the order of this object, which can differ from the order of your "
-        "input because DonorData reorders samples and cells."
-    )
-    if isinstance(key.index, pd.RangeIndex):
-        # Also when the names are "0", "1", ...: the mask may be in the order of the input or of this object.
-        raise ValueError(
-            f"Boolean mask over {what} has the default index 0, 1, 2, ... instead of the names of the {what}, "
-            f"so it cannot be matched by name. {advice}"
-        )
-    if key.index.equals(index):
-        return key.to_numpy(dtype=bool, na_value=False)
-    labels = key.index.astype(str)
-    if not labels.is_unique:
-        raise ValueError(f"Boolean mask over {what} has duplicate labels and cannot be aligned by index.")
-    missing = index.difference(labels)
-    if len(missing):
-        raise ValueError(
-            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, for example "
-            f"{list(missing[:3])}, so it cannot be matched by name. {advice}"
-        )
-    return pd.Series(key.array, index=labels).reindex(index).to_numpy(dtype=bool, na_value=False)
+    return align_series(key, index, what, f"Boolean mask over {what}").to_numpy(dtype=bool, na_value=False)
 
 
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:

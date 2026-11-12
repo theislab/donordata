@@ -491,7 +491,7 @@ def test_boolean_series_without_names_raises_and_warns_about_position():
     dd, cells, _ = _reordered_dd()
     keep = pd.Series(cells.obs_names.isin(["c1", "c4"]))  # index 0..5, not cell names
     for select in CELL_SELECTIONS.values():
-        with pytest.raises(ValueError, match="default index 0, 1, 2.*mask.values.*reorders"):
+        with pytest.raises(ValueError, match=r"default index 0, 1, 2.*\.values.*reorders"):
             select(dd, keep)
 
 
