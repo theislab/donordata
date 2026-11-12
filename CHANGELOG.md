@@ -42,3 +42,17 @@ First release of DonorData as a package of its own, split from cellink.
 - `donordata.ml.MILDataset` with bags per donor or per sample.
 - Reading of files in the versions 0.1.0 and 0.2.0 written by cellink. Their donor level `G` is read into `D`
   with a warning.
+
+### Fixed
+
+- `sel`, `dd[...]`, `D_var` and `C_var` match a boolean `pandas.Series` to the axis by name, as `filter_donors`,
+  `filter_samples` and `filter_cells` already do. Before, they applied it by position, which selected the wrong
+  samples or cells when the Series was built from the input tables, because `DonorData` reorders samples and
+  cells. A Series whose index does not contain the names of the axis, such as the default index 0, 1, 2, ..., now
+  raises a `ValueError` instead of selecting by position, also when the cells have no real names and are
+  called `"0"`, `"1"`, .... Boolean arrays and lists are still applied by position. A missing entry (NA) of a
+  mask counts as `False`.
+- `dd[mask, ...]` with an ellipsis and a boolean array or Series no longer raises an error.
+- `filter_donors`, `filter_samples` and `filter_cells` raise a `KeyError` for a name that does not exist, as `sel`
+  and `dd[...]` do. Before, they ignored it. They raise a `TypeError` for integers, which they used to read as
+  names, and for slices. Names are given as text; positions are selected with `dd[...]` or `sel`.
