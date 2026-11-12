@@ -1629,19 +1629,7 @@ class DonorData:
     def _with_split_values(self, stratify, groups) -> tuple[DonorData, str | pd.Series | None]:
         """Drop the donors whose ``stratify`` or ``groups`` value is missing, with a warning."""
         if isinstance(stratify, pd.Series):
-            # Matched to the donors by name, like a boolean mask in a selection.
-            names = stratify.index.astype(str)
-            if (
-                isinstance(stratify.index, pd.RangeIndex)
-                or not names.is_unique
-                or len(self.obs_names.difference(names))
-            ):
-                raise ValueError(
-                    "stratify is a Series whose index does not hold every donor exactly once, so it cannot be "
-                    "matched by name. Pass a donor table column, or ``stratify.values`` if the values are in the "
-                    "order of the donors of this object."
-                )
-            stratify = stratify.set_axis(names).reindex(self.obs_names)
+            stratify = _utils.align_series(stratify, self.obs_names, "donors", "stratify")
         elif stratify is not None and not isinstance(stratify, str):
             if len(stratify) != self.n_donors:
                 raise ValueError("stratify must have one value per donor.")
