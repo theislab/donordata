@@ -211,3 +211,32 @@ def test_grouping_without_missing_values_does_not_warn(caplog):
         train, test = dd.train_test_split(test_size=2, stratify="sex")
     assert train.n_donors + test.n_donors == 4
     assert "Dropping" not in caplog.text and "Ignoring" not in caplog.text
+
+
+def test_splits_match_a_stratify_series_by_name():
+    dd = _grouped_dd(["T"] * 8, sex=["F", "F", "M", "M"])
+    other_order = dd.obs["sex"].loc[["c", "a", "d", "b"]]
+    with_extra = pd.concat([other_order, pd.Series(["F"], index=["not a donor"])])
+    for stratify in ("sex", other_order, with_extra, dd.obs["sex"].to_numpy(), dd.obs["sex"].tolist()):
+        for seed in range(8):
+            _, test = dd.train_test_split(test_size=2, stratify=stratify, random_state=seed)
+            assert sorted(test.obs["sex"]) == ["F", "M"]
+            for _, fold_test in dd.kfold(2, stratify=stratify, random_state=seed):
+                assert sorted(fold_test.obs["sex"]) == ["F", "M"]
+
+
+@pytest.mark.parametrize(
+    "stratify",
+    [
+        pd.Series(["F", "F", "M", "M"]),
+        pd.Series(["F", "F", "M"], index=["a", "b", "c"]),
+        pd.Series(["F", "F", "M", "M", "M"], index=["a", "b", "c", "d", "d"]),
+    ],
+    ids=["default index", "donor missing", "duplicate donor"],
+)
+def test_splits_reject_a_stratify_series_that_cannot_be_matched_by_name(stratify):
+    dd = _grouped_dd(["T"] * 8)
+    with pytest.raises(ValueError, match="cannot be matched by name"):
+        dd.train_test_split(test_size=2, stratify=stratify)
+    with pytest.raises(ValueError, match="cannot be matched by name"):
+        next(dd.kfold(2, stratify=stratify))

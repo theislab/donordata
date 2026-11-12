@@ -1611,7 +1611,21 @@ class DonorData:
 
     def _with_split_values(self, stratify, groups) -> tuple[DonorData, str | pd.Series | None]:
         """Drop the donors whose ``stratify`` or ``groups`` value is missing, with a warning."""
-        if stratify is not None and not isinstance(stratify, str):
+        if isinstance(stratify, pd.Series):
+            # Matched to the donors by name, like a boolean mask in a selection.
+            names = stratify.index.astype(str)
+            if (
+                isinstance(stratify.index, pd.RangeIndex)
+                or not names.is_unique
+                or len(self.obs_names.difference(names))
+            ):
+                raise ValueError(
+                    "stratify is a Series whose index does not hold every donor exactly once, so it cannot be "
+                    "matched by name. Pass a donor table column, or ``stratify.values`` if the values are in the "
+                    "order of the donors of this object."
+                )
+            stratify = stratify.set_axis(names).reindex(self.obs_names)
+        elif stratify is not None and not isinstance(stratify, str):
             if len(stratify) != self.n_donors:
                 raise ValueError("stratify must have one value per donor.")
             stratify = pd.Series(np.asarray(stratify), index=self.obs_names)
@@ -1661,7 +1675,8 @@ class DonorData:
             Fraction of donors, or of groups with ``groups``, held out for testing, or their number
             when an integer.
         stratify
-            Donor table column, or one value per donor, whose proportions are kept in both sets. With
+            Donor table column, or one value per donor, whose proportions are kept in both sets. A
+            ``pandas.Series`` is matched to the donors by name, an array or list by position. With
             ``groups`` each group counts with its most frequent value. Donors whose ``stratify`` or
             ``groups`` value is missing, or a string such as ``"nan"`` or ``"NA"``, are dropped from both
             sets with a warning.
@@ -1710,7 +1725,8 @@ class DonorData:
         n_splits
             Number of folds. Every donor is in the test set of exactly one fold.
         stratify
-            Donor table column, or one value per donor, balanced across folds. Donors whose ``stratify``
+            Donor table column, or one value per donor, balanced across folds. A ``pandas.Series`` is
+            matched to the donors by name, an array or list by position. Donors whose ``stratify``
             or ``groups`` value is missing, or a string such as ``"nan"`` or ``"NA"``, are dropped from
             all folds with a warning.
         groups
