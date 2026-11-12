@@ -117,18 +117,35 @@ def by_label(key, index: pd.Index, what: str):
 
 
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
-    """Turn a selection given as query, callable, labels or boolean mask into a boolean mask over rows."""
+    """Turn a selection given as query, callable, names or boolean mask into a boolean mask over rows.
+
+    Names must exist. Integers and slices are rejected, since they would select by position.
+    """
     if isinstance(key, str):
         result = frame.eval(key)
     elif callable(key):
         result = key(frame)
     else:
         result = key
+    by_position = "To select by position use ``dd[...]`` or ``dd.sel(...)``."
+    if isinstance(result, slice):
+        raise TypeError(f"Cannot select {what} with a slice. {by_position}")
+    if pd.api.types.infer_dtype(result if np.ndim(result) else [result], skipna=False) in ("integer", "mixed-integer"):
+        raise TypeError(
+            f"Cannot select {what} with integers. Names are stored as text, so pass them as strings, "
+            f"for example ['101', '102']. {by_position}"
+        )
     array = np.asarray(by_label(result, frame.index, what))
     if array.dtype != bool:
         if array.ndim != 1:
             raise ValueError(f"Cannot select {what} with an array of shape {array.shape}.")
-        return frame.index.isin(pd.Index(array).astype(str))
+        names = pd.Index(array).astype(str)
+        unknown = names.difference(frame.index)
+        if len(unknown):
+            raise KeyError(
+                f"{len(unknown)} of the {len(names)} given names are not {what}, for example {list(unknown[:3])}."
+            )
+        return frame.index.isin(names)
     if array.shape != (len(frame),):
         raise ValueError(f"Boolean mask over {what} has length {array.size}, expected {len(frame)}.")
     return array

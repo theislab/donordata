@@ -668,3 +668,38 @@ def test_missing_entries_of_a_mask_count_as_false(select):
     assert list(select(dd, older).obs_names) == ["a"]
     assert list(select(dd, dd.obs["age"] <= 50).obs_names) == ["c"]
     assert list(select(dd, dd.obs["smoker"]).obs_names) == ["a"]
+
+
+FILTERS = {"donor": "filter_donors", "sample": "filter_samples", "cell": "filter_cells"}
+
+
+@pytest.mark.parametrize("level", ROUTES)
+def test_every_selection_route_rejects_unknown_names(level):
+    for select in ROUTES[level].values():
+        dd, _ = _numbered_dd()
+        with pytest.raises(KeyError, match="not in the object"):
+            select(dd, [KEPT[level][0], "not in the object"])
+
+
+@pytest.mark.parametrize("level", FILTERS)
+@pytest.mark.parametrize("key", [[0, 1], np.array([0, 1]), 0, np.int64(1), ["s0", 1]], ids=repr)
+def test_filters_reject_integers(level, key):
+    dd, _ = _numbered_dd()
+    with pytest.raises(TypeError, match=r"integers.*pass them as strings.*dd\[\.\.\.\]"):
+        getattr(dd, FILTERS[level])(key)
+
+
+@pytest.mark.parametrize("level", FILTERS)
+def test_filters_reject_slices(level):
+    dd, _ = _numbered_dd()
+    with pytest.raises(TypeError, match=r"slice.*dd\[\.\.\.\]"):
+        getattr(dd, FILTERS[level])(slice(0, 2))
+
+
+def test_numeric_identifiers_are_selected_as_text():
+    donors = pd.DataFrame(index=pd.Index([101, 102], name="donor_id"))
+    obs = pd.DataFrame({"donor_id": [101, 102]}, index=["c0", "c1"])
+    dd = DonorData(D=donors, C=AnnData(np.zeros((2, 1)), obs=obs), donor_id="donor_id")
+    assert list(dd.filter_donors(["102"]).obs_names) == ["102"]
+    with pytest.raises(TypeError, match="integers"):
+        dd.filter_donors([102])

@@ -644,6 +644,8 @@ class DonorData:
             identifiers.
             A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
             ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
+            Names are given as text and must exist. Integers and slices raise an error; select by
+            position with ``dd[...]`` or :meth:`sel`.
         inplace
             Modify this object instead of returning a new one.
 
@@ -666,6 +668,8 @@ class DonorData:
             boolean mask, a boolean mask over samples, or sample identifiers.
             A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
             ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
+            Names are given as text and must exist. Integers and slices raise an error; select by
+            position with ``dd[...]`` or :meth:`sel`.
         inplace
             Modify this object instead of returning a new one.
 
@@ -687,6 +691,8 @@ class DonorData:
             and returns a boolean mask, a boolean mask over cells, or cell names.
             A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
             ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
+            Names are given as text and must exist. Integers and slices raise an error; select by
+            position with ``dd[...]`` or :meth:`sel`.
         inplace
             Modify this object instead of returning a new one.
 
