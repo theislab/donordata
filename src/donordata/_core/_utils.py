@@ -87,10 +87,21 @@ def constant_columns(obs: pd.DataFrame, codes: np.ndarray, first: np.ndarray, ex
 def by_label(key, index: pd.Index, what: str):
     """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction.
 
-    Any other selection is returned unchanged.
+    A missing entry (NA) counts as ``False``. Any other selection is returned unchanged.
     """
     if not (isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype)):
         return key
+    advice = (
+        "Build the mask from the current object. Passing ``mask.values`` selects by position instead: "
+        "do that only if the mask is in the order of this object, which can differ from the order of your "
+        "input because DonorData reorders samples and cells."
+    )
+    if isinstance(key.index, pd.RangeIndex):
+        # Also when the names are "0", "1", ...: the mask may be in the order of the input or of this object.
+        raise ValueError(
+            f"Boolean mask over {what} has the default index 0, 1, 2, ... instead of the names of the {what}, "
+            f"so it cannot be matched by name. {advice}"
+        )
     if key.index.equals(index):
         return key.to_numpy(dtype=bool, na_value=False)
     labels = key.index.astype(str)
@@ -98,16 +109,9 @@ def by_label(key, index: pd.Index, what: str):
         raise ValueError(f"Boolean mask over {what} has duplicate labels and cannot be aligned by index.")
     missing = index.difference(labels)
     if len(missing):
-        problem = (
-            f"has the default index 0, 1, 2, ... instead of the names of the {what}"
-            if isinstance(key.index, pd.RangeIndex)
-            else f"is missing {len(missing)} of {len(index)} labels, for example {list(missing[:3])}"
-        )
         raise ValueError(
-            f"Boolean mask over {what} {problem}, so it cannot be matched by name. "
-            "Build the mask from the current object. Passing ``mask.values`` selects by position instead: "
-            "do that only if the mask is in the order of this object, which can differ from the order of your "
-            "input because DonorData reorders samples and cells."
+            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, for example "
+            f"{list(missing[:3])}, so it cannot be matched by name. {advice}"
         )
     return pd.Series(key.array, index=labels).reindex(index).to_numpy(dtype=bool, na_value=False)
 

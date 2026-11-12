@@ -640,3 +640,31 @@ def test_every_selection_route_rejects_a_series_without_names(level):
         key = pd.Series(LEVEL_NAMES[level](dd).isin(KEPT[level]))  # index 0, 1, 2, ...
         with pytest.raises(ValueError, match="default index 0, 1, 2"):
             select(dd, key)
+
+
+def test_unnamed_series_raises_even_if_the_cells_are_called_0_1_2():
+    """Cells without real names are called "0", "1", ...: the labels of an unnamed Series would match them."""
+    obs = pd.DataFrame({"donor_id": ["b", "a", "b", "a"], "n_counts": [10, 20, 30, 40]})
+    dd = DonorData.from_anndata(AnnData(np.zeros((4, 1)), obs=obs), "donor_id", columns=[])
+    assert list(dd.C.obs_names) == ["1", "3", "0", "2"]  # reordered
+    in_object_order = dd.C.obs["n_counts"].to_numpy() >= 30
+    for select in CELL_SELECTIONS.values():
+        with pytest.raises(ValueError, match="default index 0, 1, 2"):
+            select(dd, pd.Series(in_object_order))
+        assert sorted(select(dd, in_object_order).C.obs["n_counts"]) == [30, 40]  # an array goes by position
+        assert sorted(select(dd, dd.C.obs["n_counts"] >= 30).C.obs["n_counts"]) == [30, 40]  # named "0", "1", ...
+
+
+@pytest.mark.parametrize("select", DONOR_SELECTIONS.values(), ids=DONOR_SELECTIONS.keys())
+def test_missing_entries_of_a_mask_count_as_false(select):
+    donors = pd.DataFrame(
+        {"age": pd.array([61, pd.NA, 40], dtype="Int64"), "smoker": pd.array([True, pd.NA, False], dtype="boolean")},
+        index=pd.Index(["a", "b", "c"], name="donor_id"),
+    )
+    obs = pd.DataFrame({"donor_id": ["a", "b", "c"]}, index=["c0", "c1", "c2"])
+    dd = DonorData(D=donors, C=AnnData(np.zeros((3, 1)), obs=obs), donor_id="donor_id")
+    older = dd.obs["age"] > 50
+    assert older.isna().tolist() == [False, True, False]
+    assert list(select(dd, older).obs_names) == ["a"]
+    assert list(select(dd, dd.obs["age"] <= 50).obs_names) == ["c"]
+    assert list(select(dd, dd.obs["smoker"]).obs_names) == ["a"]

@@ -589,7 +589,9 @@ class DonorData:
         """Select along the axes of every level by keyword.
 
         A boolean ``pandas.Series`` is matched to the axis by name, as in ``filter_donors``, ``filter_samples`` and
-        ``filter_cells``. Boolean arrays and lists are applied by position, in the order of this object.
+        ``filter_cells``, and an entry that is missing (NA) counts as ``False``. A Series with the default index
+        0, 1, 2, ... raises an error, because it cannot be matched by name. Boolean arrays and lists are applied by
+        position, in the order of this object.
 
         Parameters
         ----------
@@ -640,6 +642,8 @@ class DonorData:
             A query on the donor table such as ``"age > 60 and sex == 'F'"``, a callable that takes
             the donor table and returns a boolean mask, a boolean mask over donors, or donor
             identifiers.
+            A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
+            ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
         inplace
             Modify this object instead of returning a new one.
 
@@ -660,6 +664,8 @@ class DonorData:
             A query on the sample table, which also sees donor columns, such as
             ``"timepoint == 'day 7' and age > 60"``, a callable that takes this table and returns a
             boolean mask, a boolean mask over samples, or sample identifiers.
+            A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
+            ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
         inplace
             Modify this object instead of returning a new one.
 
@@ -679,6 +685,8 @@ class DonorData:
         key
             A query on ``C.obs`` such as ``"cell_type == 'B cell'"``, a callable that takes ``C.obs``
             and returns a boolean mask, a boolean mask over cells, or cell names.
+            A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
+            ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
         inplace
             Modify this object instead of returning a new one.
 
