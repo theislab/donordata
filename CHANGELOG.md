@@ -18,13 +18,13 @@ First release of DonorData as a package of its own, split from cellink.
   them. Before, a missing identifier became a donor or sample called `"nan"` or `"None"`. A string that stands for
   a missing value (`""`, `"NA"`, `"N/A"`, `"<NA>"`, `"nan"`, `"NaT"`, `"None"` or `"null"`, in any case) counts as
   missing too and has to be renamed if it is a real name.
-- The same rule applies to columns that group donors or cells, always with a warning that names the units:
-  - `nest` and `collapse` drop donors whose grouping value is missing, instead of raising an error.
-  - `train_test_split` and `kfold` drop donors whose `stratify` or `groups` value is missing.
+- `nest` and `collapse` drop donors whose grouping value is missing, with a warning.
+- `train_test_split`, `kfold` and `subsample_cells` treat a missing `stratify`, `groups` or `groupby` value as a group
+  of its own.
+- `composition`, `pseudobulk` and `filter_donors_by_cells` ignore cells whose `groupby` value is missing, with a
+  warning.
 - `train_test_split` and `kfold` match a `stratify` given as a `pandas.Series` to the donors by name. Before, they
   read it by position, which assigned wrong classes when the Series was in another order than the donors.
-  - `subsample_cells` drops cells whose `groupby` value is missing.
-  - `composition`, `pseudobulk` and `filter_donors_by_cells` ignore cells whose `groupby` value is missing.
 
 ### Added
 

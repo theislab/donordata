@@ -1,4 +1,4 @@
-"""Missing donor, sample and group values are dropped or ignored with a warning, in every function alike."""
+"""Units with a missing donor or sample identifier are dropped with a warning; a missing value elsewhere is kept as a group of its own or ignored."""
 
 import numpy as np
 import pandas as pd
@@ -166,40 +166,71 @@ def test_composition_and_pseudobulk_ignore_cells_with_a_missing_group(caplog, mi
 
 
 @pytest.mark.parametrize("missing", MISSING_GROUPS, ids=repr)
-def test_subsample_cells_drops_cells_with_a_missing_group(caplog, missing):
+@pytest.mark.parametrize("inplace", [False, True], ids=["copy", "inplace"])
+def test_subsample_cells_keeps_cells_with_a_missing_group_as_a_group(caplog, missing, inplace):
     dd = _grouped_dd(["T", missing, "T", "B", "B", "B", "T", "T"])
     with caplog.at_level("WARNING"):
-        result = dd.subsample_cells(1, groupby="cell_type")
-    assert "c1" not in result.C.obs_names
-    assert result.n_cells == 5  # one cell per donor and cell type
-    assert "Dropping 1 cells with a missing 'cell_type'" in caplog.text
+        result = dd.subsample_cells(1, groupby="cell_type", inplace=inplace)
+    result = dd if inplace else result
+    assert "c1" in result.C.obs_names
+    assert result.n_cells == 6
+    assert "Dropping" not in caplog.text
 
 
 @pytest.mark.parametrize("missing", MISSING_GROUPS, ids=repr)
 @pytest.mark.parametrize("as_column", [True, False], ids=["column", "values"])
-def test_splits_drop_donors_with_a_missing_stratum(caplog, missing, as_column):
+def test_splits_keep_donors_with_a_missing_stratum(caplog, missing, as_column):
     sex = ["F", "M", missing, "M"]
     dd = _grouped_dd(["T"] * 8, sex=sex)
     stratify = "sex" if as_column else sex
     with caplog.at_level("WARNING"):
         train, test = dd.train_test_split(test_size=1, stratify=stratify)
         folds = list(dd.kfold(3, stratify=stratify))
-    assert sorted([*train.obs_names, *test.obs_names]) == ["a", "b", "d"]
-    for fold_train, fold_test in folds:
-        assert sorted([*fold_train.obs_names, *fold_test.obs_names]) == ["a", "b", "d"]
-    assert sorted(name for _, fold_test in folds for name in fold_test.obs_names) == ["a", "b", "d"]
-    key = "sex" if as_column else "stratify"
-    assert caplog.text.count(f"Dropping 1 donors with a missing '{key}'") == 2
-    assert "'c'" in caplog.text
+    assert sorted([*train.obs_names, *test.obs_names]) == ["a", "b", "c", "d"]
+    assert sorted(name for _, fold_test in folds for name in fold_test.obs_names) == ["a", "b", "c", "d"]
+    assert "Dropping" not in caplog.text
 
 
-def test_splits_drop_donors_with_a_missing_group(caplog):
+def test_missing_stratify_values_form_one_stratum():
+    dd = _grouped_dd(["T"] * 8, sex=["F", None, "nan", "F"])
+    assert len(set(dd._split_units("sex", None)[1])) == 2
+
+
+def test_splits_keep_donors_with_a_missing_group_as_their_own_groups(caplog):
     dd = _grouped_dd(["T"] * 8)
-    dd.obs["site"] = ["x", "NA", "y", "z"]
+    dd.obs["site"] = ["x", "NA", None, "x"]
     with caplog.at_level("WARNING"):
-        train, test = dd.train_test_split(test_size=1, groups="site")
-    assert sorted([*train.obs_names, *test.obs_names]) == ["a", "c", "d"]
-    assert "Dropping 1 donors with a missing 'site'" in caplog.text
+        train, test = dd.train_test_split(test_size=1, groups="site", random_state=0)
+        units, _ = dd._split_units(None, "site")
+    assert sorted([*train.obs_names, *test.obs_names]) == ["a", "b", "c", "d"]
+    assert units[0] == units[3] and len({units[0], units[1], units[2]}) == 3
+    assert "Dropping" not in caplog.text
+
+
+NAN_NAMED_DONORS = {
+    "index": lambda: pd.DataFrame({"age": [1.0, 2.0, 3.0]}, index=pd.Index(["a", np.nan, "c"], name="donor_id")),
+    "column": lambda: pd.DataFrame({"donor_id": ["a", np.nan, "c"], "age": [1.0, 2.0, 3.0]}),
+    "two missing": lambda: pd.DataFrame({"donor_id": ["a", np.nan, None, "c"], "age": [1.0, 2.0, 2.5, 3.0]}),
+}
+
+
+@pytest.mark.parametrize("make_donors", NAN_NAMED_DONORS.values(), ids=NAN_NAMED_DONORS.keys())
+def test_donors_with_a_missing_name_do_not_collect_cells_without_a_donor(caplog, make_donors):
+    obs = pd.DataFrame({"donor_id": ["a", "a", np.nan, None, "c", "c"]}, index=[f"x{i}" for i in range(6)])
+    with caplog.at_level("WARNING"):
+        dd = DonorData(D=make_donors(), C=AnnData(np.ones((6, 1)), obs=obs), donor_id="donor_id")
+    assert list(dd.obs_names) == ["a", "c"]
+    assert list(dd.C.obs_names) == ["x0", "x1", "x4", "x5"]
+    assert "Dropping 2 cells with a missing 'donor_id'" in caplog.text
+    assert "donors with a missing 'donor_id'" in caplog.text
+
+
+def test_samples_with_a_missing_name_do_not_collect_cells_without_a_sample():
+    samples = pd.DataFrame({"donor_id": ["a", "b", "b"]}, index=pd.Index(["s1", np.nan, "s3"], name="sample_id"))
+    obs = pd.DataFrame({"sample_id": ["s1", np.nan, "s3", None]}, index=[f"c{i}" for i in range(4)])
+    dd = DonorData(S=samples, C=AnnData(np.zeros((4, 1)), obs=obs), sample_id="sample_id")
+    assert list(dd.levels["sample"].obs_names) == ["s1", "s3"]
+    assert list(dd.C.obs_names) == ["c0", "c2"]
 
 
 def test_grouping_without_missing_values_does_not_warn(caplog):

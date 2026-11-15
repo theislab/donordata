@@ -62,6 +62,11 @@ def is_missing_label(values: pd.Series) -> np.ndarray:
     return (values.isna() | values.isin(missing_text)).to_numpy()
 
 
+def missing_as_na(values: pd.Series) -> pd.Series:
+    """``values`` with every missing value, and every string such as ``"nan"`` that stands for one, as NaN."""
+    return values.where(~is_missing_label(values))
+
+
 def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
     """Return identifiers as strings, with missing ones as NaN, keeping a categorical encoding if the input has one."""
     missing = is_missing_label(values)
@@ -74,7 +79,9 @@ def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
     """Position of every value in ``categories``, or ``-1`` when it is not one of them."""
     labels = np.asarray(string_labels(values), dtype=object)
-    return np.asarray(pd.Index(categories).get_indexer(labels), dtype=np.int64)
+    codes = np.asarray(pd.Index(categories).get_indexer(labels), dtype=np.int64)
+    codes[pd.isna(labels)] = -1
+    return codes
 
 
 def first_positions(codes: np.ndarray, n_groups: int) -> np.ndarray:
