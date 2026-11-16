@@ -15,7 +15,7 @@ from mudata import MuData
 
 from donordata._core import _utils
 from donordata._core._repr import render
-from donordata._core._write import is_ehrdata, write_group
+from donordata._core._write import is_ehrdata, reads_from, write_group
 from donordata._core.fields import DAnn
 
 logger = logging.getLogger(__name__)
@@ -1688,6 +1688,7 @@ class DonorData:
         path
             Destination, conventionally ending in ``.dd.h5``.
         """
+        self._check_not_reading_from(path)
         with h5py.File(str(path), "w") as f:
             write_group(self, f)
 
@@ -1705,8 +1706,16 @@ class DonorData:
             level is written by ehrdata with its own chunks, and ``x_chunks`` for it is ignored with a
             warning.
         """
+        self._check_not_reading_from(path)
         f = zarr.open(str(path), mode="w")
         write_group(self, f, zarr_path=str(path), x_chunks=x_chunks)
+
+    def _check_not_reading_from(self, path) -> None:
+        if any(reads_from(level, path) for level in (self._D, self._S, self._C) if level is not None):
+            raise ValueError(
+                f"This DonorData reads its matrices from {path}, which writing would erase first. Write it to "
+                "another path, or read it into memory with lazy=False."
+            )
 
     def write_dd(self, path: str, fmt: Literal["h5", "zarr"] | None = None) -> None:
         """Write to disk, choosing the format from the extension unless ``fmt`` is given.

@@ -42,15 +42,17 @@ def _read_columns(group, columns) -> pd.DataFrame:
     return frame
 
 
-def _lazy_zarr_callback(func, elem_name: str, elem, iospec, var_columns=None):
+def _lazy_callback(func, elem_name: str, elem, iospec, var_columns=None):
     """``read_dispatched`` callback that keeps ``X`` and layers on disk, dense ones as dask arrays."""
     if iospec.encoding_type == "anndata" or elem_name.endswith("/"):
-        callback = partial(_lazy_zarr_callback, var_columns=var_columns)
+        callback = partial(_lazy_callback, var_columns=var_columns)
         return ad.AnnData(**{k: read_dispatched(v, callback) for k, v in dict(elem).items() if k in _ANNDATA_SLOTS})
     if var_columns is not None and elem_name.endswith("/var") and iospec.encoding_type == "dataframe":
         return _read_columns(elem, var_columns)
     if _is_matrix_elem(elem_name) and iospec.encoding_type == "array":
-        return da.from_zarr(elem)
+        if isinstance(elem, zarr.Array):
+            return da.from_zarr(elem)
+        return da.from_array(elem, chunks=elem.chunks or tuple(min(n, 4096) for n in elem.shape), lock=True)
     if _is_matrix_elem(elem_name) and iospec.encoding_type in ("csr_matrix", "csc_matrix"):
         return sparse_dataset(elem)
     if _is_matrix_elem(elem_name):
@@ -59,9 +61,12 @@ def _lazy_zarr_callback(func, elem_name: str, elem, iospec, var_columns=None):
 
 
 def _read_anndata(group, lazy: bool, var_columns=None):
-    if not lazy:
-        return read_elem(group)
-    return read_dispatched(group, callback=partial(_lazy_zarr_callback, var_columns=var_columns))
+    if lazy:
+        return read_dispatched(group, callback=partial(_lazy_callback, var_columns=var_columns))
+    adata = read_elem(group)
+    if var_columns is not None:
+        adata.var = _read_columns(group["var"], var_columns)
+    return adata
 
 
 def _read_mudata(group: StorageType, lazy: bool = False) -> MuData:
@@ -165,23 +170,30 @@ def _read_dd(f, lazy: bool = False, var_columns=None) -> DonorData:
     return dd
 
 
-def read_h5_dd(path: str | Path) -> DonorData:
+def read_h5_dd(path: str | Path, lazy: bool = False, var_columns: list[str] | None = None) -> DonorData:
     """Read a DonorData from an HDF5 file.
 
     Parameters
     ----------
     path
         File written by :meth:`DonorData.write_h5_dd`.
+    lazy
+        Keep ``X`` and layers on disk, dense ones as dask arrays and sparse ones as backed sparse
+        matrices, as :func:`read_zarr_dd` does. The file stays open while they are in use.
+    var_columns
+        Columns of ``D.var`` to read, for example ``["chrom", "pos"]`` for genotypes. All by default.
 
     Returns
     -------
     DonorData
     """
+    if lazy:
+        return _read_dd(h5py.File(str(path), "r"), lazy=True, var_columns=var_columns)
     with h5py.File(str(path), "r") as f:
-        return _read_dd(f)
+        return _read_dd(f, var_columns=var_columns)
 
 
-def read_zarr_dd(path: str | Path, var_columns: list[str] | None = None) -> DonorData:
+def read_zarr_dd(path: str | Path, var_columns: list[str] | None = None, lazy: bool = True) -> DonorData:
     """Read a DonorData from a Zarr store.
 
     ``X`` and layers stay on disk, dense ones as dask arrays and sparse ones as backed sparse matrices,
@@ -195,15 +207,17 @@ def read_zarr_dd(path: str | Path, var_columns: list[str] | None = None) -> Dono
         Store written by :meth:`DonorData.write_zarr_dd`.
     var_columns
         Columns of ``D.var`` to read, for example ``["chrom", "pos"]`` for genotypes. All by default.
+    lazy
+        Read ``X`` and layers into memory with ``False``, for tools that need in-memory matrices.
 
     Returns
     -------
     DonorData
     """
-    return _read_dd(zarr.open(str(path), mode="r"), lazy=True, var_columns=var_columns)
+    return _read_dd(zarr.open(str(path), mode="r"), lazy=lazy, var_columns=var_columns)
 
 
-def read_dd(path: str | Path, fmt: str | None = None) -> DonorData:
+def read_dd(path: str | Path, fmt: str | None = None, lazy: bool | None = None) -> DonorData:
     """Read a DonorData from HDF5 or Zarr, choosing the format from the extension.
 
     Parameters
@@ -212,6 +226,9 @@ def read_dd(path: str | Path, fmt: str | None = None) -> DonorData:
         File or store ending in ``.h5`` or ``.zarr``.
     fmt
         ``"h5"`` or ``"zarr"`` to override the detection.
+    lazy
+        Keep ``X`` and layers on disk, see :func:`read_h5_dd` and :func:`read_zarr_dd`. Defaults to
+        ``False`` for HDF5 and ``True`` for Zarr.
 
     Returns
     -------
@@ -222,7 +239,7 @@ def read_dd(path: str | Path, fmt: str | None = None) -> DonorData:
     >>> dd = read_dd("donor_data.dd.h5")
     >>> dd = read_dd("donor_data.dd.zarr")
     """
-    path = str(path)
+    path = str(path).rstrip("/")
     if fmt is None:
         if path.endswith(".h5"):
             fmt = "h5"
@@ -231,7 +248,7 @@ def read_dd(path: str | Path, fmt: str | None = None) -> DonorData:
         else:
             raise ValueError("Cannot detect format from file extension. Provide `fmt` as 'h5' or 'zarr'.")
     if fmt == "h5":
-        return read_h5_dd(path)
+        return read_h5_dd(path, lazy=bool(lazy))
     if fmt == "zarr":
-        return read_zarr_dd(path)
+        return read_zarr_dd(path, lazy=True if lazy is None else lazy)
     raise ValueError("Unknown format: use 'h5' or 'zarr'.")

@@ -23,7 +23,9 @@ First release of DonorData as a package of its own, split from cellink.
 - `aggregate`, `pseudobulk`, `composition` and `cell_weights`.
 - `nest`, `flatten` and `collapse` to change the levels.
 - `train_test_split` and `kfold` over donors, with stratification and groups.
-- `donordata.io` with `read_dd`, `read_h5_dd` and `read_zarr_dd`, and the on-disk format 0.3.0.
+- `donordata.io` with `read_dd`, `read_h5_dd` and `read_zarr_dd`, and the on-disk format 0.3.0. `read_zarr_dd` and
+  `read_h5_dd(lazy=True)` keep `X` and layers on disk; `read_zarr_dd(lazy=False)` reads them into memory.
+  Writing to a file or store that a lazily read object still reads from raises an error.
 - `concat`, `validate` and `register_donordata_namespace`. `concat` returns sparse `obsm` matrices as scipy sparse
   arrays (`csr_array`), since scipy 2 deprecates sparse matrices (`csr_matrix`).
 - `donordata.ml.MILDataset` with bags per donor or per sample.
