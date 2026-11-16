@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from anndata import AnnData
 
-from donordata import DonorData, DonorDataSchemaError, validate
+from donordata import DonorData, DonorDataSchemaError, read_dd, validate
 
 if hasattr(md, "set_options"):
     md.set_options(pull_on_update=False)
@@ -387,11 +387,13 @@ def test_pseudobulk_becomes_donor_side(dd):
     bulk = dd.pseudobulk(func="mean")
     np.testing.assert_array_equal(bulk.obsm["emb"], dd.obsm["emb"])
     assert bulk.uns["sample_representations"] == ["emb"]
+    bulk_obs = bulk.obs.copy()
     dd.D = bulk
     assert dd.D_type == "anndata"
-    assert dd.D is bulk
+    np.testing.assert_array_equal(dd.D.X, bulk.X)
     dd.obsp["other"] = np.zeros((dd.n_donors, dd.n_donors))
-    assert "other" in bulk.obsp
+    assert "other" not in bulk.obsp
+    pd.testing.assert_frame_equal(bulk.obs, bulk_obs)
     subset = dd.filter_donors("age > 40")
     assert subset.D.shape == (subset.n_donors, dd.C.n_vars)
     validate(subset)
@@ -703,3 +705,238 @@ def test_numeric_identifiers_are_selected_as_text():
     assert list(dd.filter_donors(["102"]).obs_names) == ["102"]
     with pytest.raises(TypeError, match="integers"):
         dd.filter_donors([102])
+
+
+def _levels_dd(layout):
+    """Six cells of donors a, b, c, with D as a table or an AnnData and an optional sample table."""
+    obs = pd.DataFrame(
+        {
+            "donor_id": np.repeat(["a", "b", "c"], 2),
+            "sample_id": ["s1", "s1", "s2", "s3", "s4", "s4"],
+            "cell_type": ["T", "B"] * 3,
+        },
+        index=[f"cell{i}" for i in range(6)],
+    )
+    C = AnnData(np.arange(18, dtype=np.float32).reshape(6, 3), obs=obs, var=pd.DataFrame(index=["g0", "g1", "g2"]))
+    donors = pd.DataFrame({"age": [30.0, 40.0, 50.0]}, index=pd.Index(["a", "b", "c"], name="donor_id"))
+    D = AnnData(np.ones((3, 2), dtype=np.float32), obs=donors) if layout.startswith("anndata") else donors
+    if layout.endswith("samples"):
+        samples = pd.DataFrame(
+            {"donor_id": ["a", "b", "b", "c"]}, index=pd.Index(["s1", "s2", "s3", "s4"], name="sample_id")
+        )
+        return DonorData(D=D, S=samples, C=C, donor_id="donor_id", sample_id="sample_id")
+    return DonorData(D=D, C=C, donor_id="donor_id")
+
+
+SELECTIONS = {
+    "filter_cells keeping every donor": lambda dd: dd.filter_cells(dd.C.obs["cell_type"] == "T"),
+    "filter_donors keeping every cell": lambda dd: dd.filter_donors(["a", "b", "c"]),
+    "sel of genes": lambda dd: dd.sel(C_var=["g0", "g1"]),
+    "dd[...] of genes": lambda dd: dd[..., ["g0", "g1"]],
+    "subsample_cells": lambda dd: dd.subsample_cells(5),
+    "train_test_split": lambda dd: dd.train_test_split(test_size=1, random_state=0)[0],
+}
+
+
+@pytest.mark.parametrize("select", SELECTIONS.values(), ids=SELECTIONS.keys())
+@pytest.mark.parametrize("layout", ["table", "anndata", "table with samples", "anndata with samples"])
+def test_writing_to_a_selection_leaves_the_original_unchanged(select, layout):
+    dd = _levels_dd(layout)
+    dd.uns["nested"] = {"key": 1}
+    before = dd.copy()
+    new = select(dd)
+    (new.D.obs if isinstance(new.D, AnnData) else new.D)["added"] = 1
+    new.composition("cell_type")
+    new.C.obs["added"] = 1
+    new.C.X[0, 0] = -1
+    new.C.X = new.C.X * 0
+    if isinstance(new.D, AnnData):
+        new.D.X = new.D.X * 0
+    new.uns["nested"]["key"] = 2
+    for level in new.level_names:
+        new.levels[level].obsm["added"] = np.zeros((new.levels[level].n_obs, 1))
+    for level in dd.level_names:
+        assert "added" not in dd.levels[level].obsm
+        assert "added" not in dd.levels[level].obs.columns
+    assert list(dd.obsm.keys()) == list(before.obsm.keys())
+    np.testing.assert_array_equal(dd.C.X, before.C.X)
+    if isinstance(dd.D, AnnData):
+        np.testing.assert_array_equal(dd.D.X, before.D.X)
+    assert dd.uns["nested"] == {"key": 1}
+    validate(dd)
+
+
+def test_slicing_genes_keeps_synced_matrices_of_the_original():
+    dd = _levels_dd("table")
+    dd._var_dims_to_sync = ["X_mean"]
+    dd.aggregate(key_added="X_mean", sync_var=True)
+    columns = list(dd.obsm["X_mean"].columns)
+    sliced = dd[..., ["g0", "g1"]]
+    assert list(sliced.obsm["X_mean"].columns) == ["g0", "g1"]
+    assert list(dd.obsm["X_mean"].columns) == columns == ["g0", "g1", "g2"]
+
+
+REJECTED = {
+    "C with donors contradicting the samples": ("C", lambda dd: dd.C.obs.assign(donor_id="c")),
+    "S with duplicate sample names": ("S", None),
+    "D without the donors of the cells": ("D", None),
+}
+
+
+@pytest.mark.parametrize("what", REJECTED.keys())
+def test_a_rejected_level_assignment_keeps_the_object(what):
+    dd = _levels_dd("table with samples")
+    before = dd.copy()
+    if what.startswith("C"):
+        bad = dd.C.copy()
+        bad.obs["donor_id"] = "c"
+        with pytest.raises(ValueError, match="disagrees"):
+            dd.C = bad
+    elif what.startswith("S"):
+        bad = pd.DataFrame({"donor_id": ["a", "b"]}, index=pd.Index(["s1", "s1"], name="sample_id"))
+        with pytest.raises(ValueError):
+            dd.S = bad
+    else:
+        with pytest.raises(ValueError):
+            dd.D = pd.DataFrame({"age": [1.0]}, index=pd.Index(["zz"], name="donor_id"))
+    for level in dd.level_names:
+        assert dd.levels[level].obs.equals(before.levels[level].obs)
+    np.testing.assert_array_equal(dd.C.X, before.C.X)
+    validate(dd)
+
+
+def test_assigning_X_of_a_level_never_writes_into_another_object():
+    obs = pd.DataFrame({"donor_id": ["b", "a", "b", "a"]}, index=[f"c{i}" for i in range(4)])
+    adata = AnnData(np.ones((4, 2), dtype=np.float32), obs=obs)
+    dd = DonorData.from_anndata(adata, donor_id="donor_id")
+    dd.C.X = np.full((4, 2), 7, dtype=np.float32)
+    np.testing.assert_array_equal(adata.X, 1)
+    subset = dd.filter_donors(["a"])
+    subset.C.X = np.zeros(subset.C.shape, dtype=np.float32)
+    np.testing.assert_array_equal(dd.C.X, 7)
+    validate(dd)
+
+
+def _two_donor_cells(donors=("A", "A", "B", "B"), X=None):
+    obs = pd.DataFrame({"donor": list(donors)}, index=[f"c{i}" for i in range(len(donors))])
+    X = np.ones((len(donors), 2), dtype=np.float32) if X is None else X
+    return AnnData(X=X, obs=obs, var=pd.DataFrame(index=["g0", "g1"]))
+
+
+def test_mudata_modalities_are_matched_to_the_cells_by_name():
+    obs = pd.DataFrame({"donor": ["A", "A", "B", "B"]}, index=["c0", "c1", "c2", "c3"])
+    rna = AnnData(X=np.array([[1.0], [2.0], [10.0], [20.0]]), obs=obs.copy())
+    mdata = md.MuData({"rna": rna})
+    mdata.obs["donor"] = obs["donor"]
+    donors = pd.DataFrame(index=pd.Index(["B", "A"], name="donor"))
+    dd = DonorData(D=donors, C=mdata, donor_id="donor")
+    dd.aggregate(mod="rna", func="sum", key_added="total")
+    assert dd.obsm["total"].iloc[:, 0].to_dict() == {"B": 30.0, "A": 3.0}
+    assert dd.get_df("rna:0", level="cell")["rna:0"].to_dict() == {"c2": 10.0, "c3": 20.0, "c0": 1.0, "c1": 2.0}
+    dd.filter_donors(["B"]).aggregate(mod="rna", func="sum", key_added="total")
+
+
+def test_synced_pseudobulk_of_a_modality_keeps_its_own_variables():
+    obs = pd.DataFrame({"donor": ["A", "A", "B", "B"]}, index=list("wxyz"))
+    rna = AnnData(X=np.arange(8.0).reshape(4, 2), obs=obs.copy(), var=pd.DataFrame(index=["g0", "g1"]))
+    prot = AnnData(X=np.ones((4, 1)), obs=pd.DataFrame(index=obs.index), var=pd.DataFrame(index=["CD3"]))
+    mdata = md.MuData({"rna": rna, "prot": prot})
+    mdata.obs["donor"] = obs["donor"]
+    dd = DonorData(D=pd.DataFrame(index=pd.Index(["A", "B"], name="donor")), C=mdata, donor_id="donor")
+    dd.aggregate(mod="rna", key_added="rna_mean", sync_var=True)
+    assert list(dd.filter_donors(["A"]).obsm["rna_mean"].columns) == ["g0", "g1"]
+
+
+@pytest.mark.parametrize("extension", [".dd.h5", ".dd.zarr"])
+@pytest.mark.parametrize("ids", [[1, 2], [1.0, 2.0], pd.Categorical(["1", "2"])], ids=["int", "float", "categorical"])
+def test_identifier_columns_of_any_type_are_stored_as_text(tmp_path, extension, ids):
+    donors = pd.DataFrame({"donor": ids, "age": [30, 40]})
+    cells = _two_donor_cells(donors=[1, 1, 2, 2])
+    dd = DonorData(D=donors, C=cells, donor_id="donor")
+    assert list(dd.obs_names) == ["1", "2"] and list(dd.obs["donor"]) == ["1", "2"]
+    dd.write_dd(tmp_path / f"ids{extension}")
+    assert list(read_dd(tmp_path / f"ids{extension}").obs_names) == ["1", "2"]
+
+
+def test_whole_numbers_stored_as_floats_match_integer_identifiers():
+    donors = pd.DataFrame(index=pd.Index([1, 2], name="donor"))
+    cells = _two_donor_cells(donors=[1.0, 1.0, 2.0, np.nan])
+    dd = DonorData(D=donors, C=cells, donor_id="donor")
+    assert list(dd.obs_names) == ["1", "2"] and dd.n_cells == 3
+
+
+def test_get_df_gives_one_column_per_time_point_for_an_ehrdata_variable():
+    ed = pytest.importorskip("ehrdata")
+    values = np.arange(12.0).reshape(2, 2, 3)
+    donors = ed.EHRData(
+        X=values,
+        obs=pd.DataFrame(index=pd.Index(["A", "B"], name="donor")),
+        var=pd.DataFrame(index=["crp", "il6"]),
+        tem=pd.DataFrame(index=["t0", "t1", "t2"]),
+    )
+    dd = DonorData(D=donors, C=_two_donor_cells(), donor_id="donor")
+    frame = dd.get_df("crp", level="donor")
+    assert list(frame.columns) == ["crp_t0", "crp_t1", "crp_t2"]
+    np.testing.assert_array_equal(frame.to_numpy(), values[:, 0, :])
+
+
+def test_nest_flatten_and_collapse_do_not_share_cells_with_the_original():
+    donors = pd.DataFrame({"patient": ["P1", "P2"]}, index=pd.Index(["A", "B"], name="donor"))
+    dd = DonorData(D=donors, C=_two_donor_cells(), donor_id="donor")
+    nested = dd.nest("patient")
+    nested.C.obs["qc"] = "x"
+    nested.C.X[:] = 0
+    assert "qc" not in dd.C.obs.columns and dd.C.X.sum() == 8
+    flat = nested.flatten()
+    flat.C.uns["note"] = 1
+    assert "note" not in nested.C.uns
+    collapsed = dd.collapse("patient")
+    collapsed.C.X[:] = 0
+    assert dd.C.X.sum() == 8
+
+
+def test_the_objects_passed_to_the_constructor_are_not_changed():
+    donors = AnnData(X=np.ones((2, 3)), obs=pd.DataFrame({"donor": ["A", "B"]}, index=["row0", "row1"]))
+    DonorData(D=donors, C=_two_donor_cells(), donor_id="donor", obsm={"pcs": np.zeros((2, 2))})
+    assert list(donors.obs_names) == ["row0", "row1"] and list(donors.obsm) == []
+
+
+def test_from_anndata_takes_a_missing_donor_from_the_sample():
+    obs = pd.DataFrame(
+        {"sample": ["s1", "s1", "s2", "s2"], "donor": ["A", np.nan, "B", "B"]}, index=[f"c{i}" for i in range(4)]
+    )
+    dd = DonorData.from_anndata(AnnData(np.ones((4, 1)), obs=obs), donor_id="donor", sample_id="sample")
+    assert list(dd.obs_names) == ["A", "B"] and dd.n_cells == 4
+    assert list(dd.S["donor"]) == ["A", "B"]
+    obs.loc["c1", "donor"] = "B"
+    with pytest.raises(ValueError, match="several donors"):
+        DonorData.from_anndata(AnnData(np.ones((4, 1)), obs=obs), donor_id="donor", sample_id="sample")
+
+
+@pytest.mark.parametrize("sample_id", [None, "sample"])
+def test_from_anndata_orders_donors_by_their_categories(sample_id):
+    obs = pd.DataFrame(
+        {
+            "donor": pd.Categorical(["P10", "P2", "P1", "P1"], categories=["P1", "P2", "P10"]),
+            "sample": ["s10", "s2", "s1", "s1"],
+        },
+        index=[f"c{i}" for i in range(4)],
+    )
+    if sample_id is not None:
+        obs.loc["c3", "donor"] = np.nan
+    dd = DonorData.from_anndata(AnnData(np.ones((4, 1)), obs=obs), donor_id="donor", sample_id=sample_id)
+    assert list(dd.obs_names) == ["P1", "P2", "P10"] and dd.n_cells == 4
+
+
+def test_names_can_be_given_as_a_set():
+    dd = DonorData(D=pd.DataFrame(index=pd.Index(["A", "B"], name="donor")), C=_two_donor_cells(), donor_id="donor")
+    assert list(dd.filter_donors({"A"}).obs_names) == ["A"]
+
+
+def test_replacing_the_donor_table_keeps_the_matrices_of_the_donors_kept():
+    donors = pd.DataFrame({"age": [30, 40, 50]}, index=pd.Index(["A", "B", "C"], name="donor"))
+    dd = DonorData(D=donors, C=_two_donor_cells(), donor_id="donor")
+    dd.aggregate(func="mean", key_added="pb")
+    dd.D = donors.assign(bmi=[22.0, 25.0, 30.0])
+    assert list(dd.obsm) == ["pb"] and list(dd.obs_names) == ["A", "B"]
+    validate(dd)

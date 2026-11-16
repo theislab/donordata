@@ -48,3 +48,45 @@ def test_donor_level_filters(dd, dd_genotypes):
     assert dd_genotypes.shape[1] == 2
     with pytest.raises(ValueError, match="no variables"):
         donordata.pp.donor_level_var_filter(dd, donor_level_key="pos", donor_level_values=1)
+
+
+def _cohort(prefix, genes):
+    import pandas as pd
+    from anndata import AnnData
+
+    from donordata import DonorData
+
+    cells = AnnData(
+        X=np.ones((2, len(genes))),
+        obs=pd.DataFrame({"donor": [prefix + "1"] * 2}, index=[prefix + "c0", prefix + "c1"]),
+        var=pd.DataFrame(index=genes),
+    )
+    dd = DonorData(D=pd.DataFrame(index=pd.Index([prefix + "1"], name="donor")), C=cells, donor_id="donor")
+    dd.aggregate(func="mean", key_added="pb")
+    return dd
+
+
+def test_concat_outer_keeps_every_column_of_donor_matrices():
+    merged = concat([_cohort("a", ["g0", "g1", "g2"]), _cohort("b", ["g0", "g1"])], join="outer")
+    assert list(merged.obsm["pb"].columns) == ["g0", "g1", "g2"]
+    assert np.isnan(merged.obsm["pb"].loc["b1", "g2"])
+
+
+def test_concat_rejects_ehrdata_levels():
+    ed = pytest.importorskip("ehrdata")
+    import pandas as pd
+    from anndata import AnnData
+
+    from donordata import DonorData
+
+    def cohort(prefix):
+        donors = ed.EHRData(
+            X=np.ones((1, 1, 2)),
+            obs=pd.DataFrame(index=pd.Index([prefix + "1"], name="donor")),
+            tem=pd.DataFrame(index=["t0", "t1"]),
+        )
+        cells = AnnData(np.ones((1, 1)), obs=pd.DataFrame({"donor": [prefix + "1"]}, index=[prefix + "c"]))
+        return DonorData(D=donors, C=cells, donor_id="donor")
+
+    with pytest.raises(ValueError, match="EHRData"):
+        concat([cohort("a"), cohort("b")])

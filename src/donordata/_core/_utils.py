@@ -67,13 +67,22 @@ def missing_as_na(values: pd.Series) -> pd.Series:
     return values.where(~is_missing_label(values))
 
 
+def as_text(values: pd.Series | pd.Index):
+    """``values`` as text, writing whole numbers stored as floats without a decimal point."""
+    if pd.api.types.is_float_dtype(values.dtype):
+        present = np.asarray(values[pd.notna(values)], dtype=float)
+        if np.all(np.isfinite(present) & (present == np.round(present))):
+            values = values.astype("Int64")
+    return values.astype(str)
+
+
 def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
     """Return identifiers as strings, with missing ones as NaN, keeping a categorical encoding if the input has one."""
     missing = is_missing_label(values)
     if isinstance(values.dtype, pd.CategoricalDtype):
-        labels = values.cat.rename_categories(values.cat.categories.astype(str))
+        labels = values.cat.rename_categories(as_text(values.cat.categories))
         return labels.where(~missing).array
-    return values.astype(str).where(~missing).to_numpy()
+    return as_text(values).where(~missing).to_numpy()
 
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
@@ -154,6 +163,8 @@ def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
 
     Names must exist. Integers and slices are rejected, since they would select by position.
     """
+    if isinstance(key, set | frozenset):
+        key = list(key)
     if isinstance(key, str):
         result = frame.eval(key)
     elif callable(key):
@@ -345,8 +356,11 @@ def modality(C: AnnData | MuData, mod: str | None) -> tuple[AnnData, np.ndarray 
         return C, None
     if mod is None:
         raise ValueError(f"C is a MuData, pass mod= to choose one of {list(C.mod)}.")
-    positions = np.asarray(C.obsmap[mod]).ravel().astype(np.int64) - 1
     adata = C.mod[mod]
+    if adata.obs_names.is_unique and C.obs_names.is_unique:
+        positions = adata.obs_names.get_indexer(C.obs_names)
+    else:
+        positions = np.asarray(C.obsmap[mod]).ravel().astype(np.int64) - 1
     present = positions >= 0
     if present.all():
         if positions.size == adata.n_obs and np.array_equal(positions, np.arange(adata.n_obs)):

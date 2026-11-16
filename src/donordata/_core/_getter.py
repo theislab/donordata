@@ -20,12 +20,19 @@ def _matrix_frame(matrix, key: str, index: pd.Index) -> pd.DataFrame:
     return pd.DataFrame(array, index=index, columns=[f"{key}_{i}" for i in range(array.shape[1])])
 
 
-def _variable(container, key: str, layer: str | None) -> pd.Series | None:
+def _variable(container, key: str, layer: str | None) -> pd.DataFrame | None:
     if container is None or isinstance(container, MuData) or container.n_vars == 0 or key not in container.var_names:
         return None
     matrix = container.X if layer in (None, "X") else container.layers[layer]
     position = container.var_names.get_loc(key)
-    return pd.Series(_utils.column_of(matrix, position), index=container.obs_names, name=key)
+    if len(matrix.shape) == 3:
+        values = np.asarray(_utils._dense(matrix[:, position, :]))
+        times = getattr(container, "tem", None)
+        labels = (
+            times.index.astype(str) if times is not None and len(times) == values.shape[1] else range(values.shape[1])
+        )
+        return pd.DataFrame(values, index=container.obs_names, columns=[f"{key}_{t}" for t in labels])
+    return pd.Series(_utils.column_of(matrix, position), index=container.obs_names, name=key).to_frame()
 
 
 def _find(dd, key: str, level: str, layer: str | None, mod: str | None):
@@ -57,15 +64,15 @@ def _find(dd, key: str, level: str, layer: str | None, mod: str | None):
                     adata, rows = _utils.modality(container, mod)
                     values = _variable(adata, name, layer)
                     if values is not None:
-                        return candidate, values.to_frame(), rows
+                        return candidate, values, rows
             else:
                 values = _variable(container, name, layer)
                 if values is not None:
-                    return candidate, values.to_frame(), None
+                    return candidate, values, None
         elif dd.levels[candidate].n_vars:
             values = _variable(container, name, None)
             if values is not None:
-                return candidate, values.to_frame(), None
+                return candidate, values, None
     raise KeyError(f"'{key}' was not found at any level.")
 
 

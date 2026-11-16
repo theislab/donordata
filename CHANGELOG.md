@@ -25,6 +25,16 @@ First release of DonorData as a package of its own, split from cellink.
   warning.
 - `train_test_split` and `kfold` match a `stratify` given as a `pandas.Series` to the donors by name. Before, they
   read it by position, which assigned wrong classes when the Series was in another order than the donors.
+- Selections, splits, `nest`, `flatten`, `collapse` and `subsample_cells` return objects that do not share levels or
+  `uns` with the original.
+- The constructor and the level setters leave their inputs unchanged; a rejected assignment leaves the object
+  unchanged; replacing a table keeps the matrices of the remaining units.
+- Identifiers are text in the index and the identifier column; whole-number floats match integer identifiers.
+- `from_anndata` gives a cell without a donor the donor of its sample.
+- MuData modalities are matched by name in `aggregate`, `pseudobulk`, `get_df` and `MILDataset`.
+- `get_df` gives one column per time point for an EHRData variable.
+- `concat(join="outer")` keeps all columns of donor and sample matrices; `concat` rejects EHRData levels.
+- The `filter_*` methods accept a set of names.
 
 ### Added
 
