@@ -84,37 +84,68 @@ def constant_columns(obs: pd.DataFrame, codes: np.ndarray, first: np.ndarray, ex
     return [c for c in obs.columns if c not in exclude and is_constant_within(obs[c], codes, first)]
 
 
-def _align_bool_series(mask: pd.Series, index: pd.Index, what: str) -> pd.Series:
-    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction."""
-    if mask.index.equals(index):
-        return mask
-    labels = mask.index.astype(str)
+def by_label(key, index: pd.Index, what: str):
+    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction.
+
+    A missing entry (NA) counts as ``False``. Any other selection is returned unchanged.
+    """
+    if not (isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype)):
+        return key
+    advice = (
+        "Build the mask from the current object. Passing ``mask.values`` selects by position instead: "
+        "do that only if the mask is in the order of this object, which can differ from the order of your "
+        "input because DonorData reorders samples and cells."
+    )
+    if isinstance(key.index, pd.RangeIndex):
+        # Also when the names are "0", "1", ...: the mask may be in the order of the input or of this object.
+        raise ValueError(
+            f"Boolean mask over {what} has the default index 0, 1, 2, ... instead of the names of the {what}, "
+            f"so it cannot be matched by name. {advice}"
+        )
+    if key.index.equals(index):
+        return key.to_numpy(dtype=bool, na_value=False)
+    labels = key.index.astype(str)
     if not labels.is_unique:
         raise ValueError(f"Boolean mask over {what} has duplicate labels and cannot be aligned by index.")
     missing = index.difference(labels)
     if len(missing):
         raise ValueError(
-            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, "
-            f"for example {list(missing[:3])}. Build the mask from the current object or pass a numpy array."
+            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, for example "
+            f"{list(missing[:3])}, so it cannot be matched by name. {advice}"
         )
-    return pd.Series(mask.array, index=labels).reindex(index)
+    return pd.Series(key.array, index=labels).reindex(index).to_numpy(dtype=bool, na_value=False)
 
 
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
-    """Turn a selection given as query, callable, labels or boolean mask into a boolean mask over rows."""
+    """Turn a selection given as query, callable, names or boolean mask into a boolean mask over rows.
+
+    Names must exist. Integers and slices are rejected, since they would select by position.
+    """
     if isinstance(key, str):
         result = frame.eval(key)
     elif callable(key):
         result = key(frame)
     else:
         result = key
-    if isinstance(result, pd.Series) and pd.api.types.is_bool_dtype(result.dtype):
-        result = _align_bool_series(result, frame.index, what).to_numpy(dtype=bool, na_value=False)
-    array = np.asarray(result)
+    by_position = "To select by position use ``dd[...]`` or ``dd.sel(...)``."
+    if isinstance(result, slice):
+        raise TypeError(f"Cannot select {what} with a slice. {by_position}")
+    if pd.api.types.infer_dtype(result if np.ndim(result) else [result], skipna=False) in ("integer", "mixed-integer"):
+        raise TypeError(
+            f"Cannot select {what} with integers. Names are stored as text, so pass them as strings, "
+            f"for example ['101', '102']. {by_position}"
+        )
+    array = np.asarray(by_label(result, frame.index, what))
     if array.dtype != bool:
         if array.ndim != 1:
             raise ValueError(f"Cannot select {what} with an array of shape {array.shape}.")
-        return frame.index.isin(pd.Index(array).astype(str))
+        names = pd.Index(array).astype(str)
+        unknown = names.difference(frame.index)
+        if len(unknown):
+            raise KeyError(
+                f"{len(unknown)} of the {len(names)} given names are not {what}, for example {list(unknown[:3])}."
+            )
+        return frame.index.isin(names)
     if array.shape != (len(frame),):
         raise ValueError(f"Boolean mask over {what} has length {array.size}, expected {len(frame)}.")
     return array

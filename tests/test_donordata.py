@@ -2,6 +2,7 @@ import mudata as md
 import numpy as np
 import pandas as pd
 import pytest
+from anndata import AnnData
 
 from donordata import DonorData, DonorDataSchemaError, validate
 
@@ -401,3 +402,304 @@ def test_donor_level_is_only_called_D(cells, genotypes):
     assert not hasattr(dd, "G") and not hasattr(dd, "G_type")
     with pytest.raises(TypeError):
         DonorData(G=genotypes, C=cells, donor_id="patient")
+
+
+def _reordered_dd():
+    """DonorData whose samples and cells the constructor reorders, so position and label disagree.
+
+    Donor ``a`` has samples s1 and s3, donor ``b`` has s0 and s2; cells c1 and c4 belong to s0.
+    """
+    donors = pd.DataFrame(index=pd.Index(["a", "b"], name="donor_id"))
+    samples = pd.DataFrame(
+        {"donor_id": ["b", "a", "b", "a"]}, index=pd.Index(["s0", "s1", "s2", "s3"], name="sample_id")
+    )
+    obs = pd.DataFrame({"sample_id": ["s2", "s0", "s3", "s1", "s0", "s3"]}, index=[f"c{i}" for i in range(6)])
+    cells = AnnData(np.zeros((6, 1)), obs=obs)
+    return DonorData(D=donors, S=samples, C=cells, donor_id="donor_id", sample_id="sample_id"), cells, samples
+
+
+def test_reordered_dd_reorders_samples_and_cells():
+    dd, cells, samples = _reordered_dd()
+    assert not dd.C.obs_names.equals(cells.obs_names)
+    assert not dd.levels["sample"].obs_names.equals(samples.index)
+
+
+CELL_SELECTIONS = {
+    "filter_cells": lambda dd, key: dd.filter_cells(key),
+    "sel": lambda dd, key: dd.sel(C_obs=key),
+    "getitem": lambda dd, key: dd[:, :, key],
+}
+CELL_KEYS = {
+    "Series in input order": lambda dd, cells: pd.Series(cells.obs_names.isin(["c1", "c4"]), index=cells.obs_names),
+    "Series in reversed order": lambda dd, cells: pd.Series(cells.obs_names.isin(["c1", "c4"]), index=cells.obs_names)[
+        ::-1
+    ],
+    "numpy mask in dd order": lambda dd, cells: dd.C.obs_names.isin(["c1", "c4"]),
+    "labels": lambda dd, cells: ["c1", "c4"],
+}
+
+
+@pytest.mark.parametrize("select", CELL_SELECTIONS.values(), ids=CELL_SELECTIONS.keys())
+@pytest.mark.parametrize("make_key", CELL_KEYS.values(), ids=CELL_KEYS.keys())
+def test_cell_selection_keeps_the_named_cells(select, make_key):
+    dd, cells, _ = _reordered_dd()
+    result = select(dd, make_key(dd, cells))
+    assert sorted(result.C.obs_names) == ["c1", "c4"]
+    assert list(result.levels["sample"].obs_names) == ["s0"]
+    assert list(result.obs_names) == ["b"]
+
+
+DONOR_SELECTIONS = {
+    "filter_donors": lambda dd, key: dd.filter_donors(key),
+    "sel": lambda dd, key: dd.sel(D_obs=key),
+    "getitem": lambda dd, key: dd[key],
+}
+
+
+@pytest.mark.parametrize("select", DONOR_SELECTIONS.values(), ids=DONOR_SELECTIONS.keys())
+def test_donor_selection_aligns_a_boolean_series_by_label(select):
+    dd, _, _ = _reordered_dd()
+    keep = pd.Series([True, False], index=["b", "a"])  # reversed relative to dd.obs_names
+    result = select(dd, keep)
+    assert list(result.obs_names) == ["b"]
+    assert sorted(result.levels["sample"].obs_names) == ["s0", "s2"]
+
+
+SAMPLE_SELECTIONS = {
+    "filter_samples": lambda dd, key: dd.filter_samples(key),
+    "sel": lambda dd, key: dd.sel(S_obs=key),
+}
+
+
+@pytest.mark.parametrize("select", SAMPLE_SELECTIONS.values(), ids=SAMPLE_SELECTIONS.keys())
+def test_sample_selection_aligns_a_boolean_series_by_label(select):
+    dd, _, samples = _reordered_dd()
+    keep = pd.Series(samples.index == "s0", index=samples.index)  # in input order, not dd order
+    result = select(dd, keep)
+    assert list(result.levels["sample"].obs_names) == ["s0"]
+    assert sorted(result.C.obs_names) == ["c1", "c4"]
+
+
+def test_boolean_series_with_unknown_labels_raises():
+    dd, cells, _ = _reordered_dd()
+    keep = pd.Series(True, index=[f"x{i}" for i in range(cells.n_obs)])
+    with pytest.raises(ValueError, match="missing 6 of 6 labels"):
+        dd.sel(C_obs=keep)
+
+
+def test_boolean_series_without_names_raises_and_warns_about_position():
+    dd, cells, _ = _reordered_dd()
+    keep = pd.Series(cells.obs_names.isin(["c1", "c4"]))  # index 0..5, not cell names
+    for select in CELL_SELECTIONS.values():
+        with pytest.raises(ValueError, match="default index 0, 1, 2.*mask.values.*reorders"):
+            select(dd, keep)
+
+
+def test_variable_selection_aligns_a_boolean_series_by_label():
+    cells = AnnData(
+        np.zeros((2, 3)),
+        obs=pd.DataFrame({"donor_id": ["a", "b"]}, index=["c0", "c1"]),
+        var=pd.DataFrame(index=["g0", "g1", "g2"]),
+    )
+    donors = AnnData(np.zeros((2, 3)), obs=pd.DataFrame(index=["a", "b"]), var=pd.DataFrame(index=["v0", "v1", "v2"]))
+    dd = DonorData(D=donors, C=cells, donor_id="donor_id")
+    reversed_genes = pd.Series([True, False, False], index=["g2", "g1", "g0"])
+    reversed_variants = pd.Series([True, False, False], index=["v2", "v1", "v0"])
+    result = dd.sel(D_var=reversed_variants, C_var=reversed_genes)
+    assert list(result.D.var_names) == ["v2"]
+    assert list(result.C.var_names) == ["g2"]
+    with pytest.raises(ValueError, match="cell variables has the default index"):
+        dd.sel(C_var=pd.Series([True, False, False]))
+
+
+def _numbered_dd():
+    """Like ``_reordered_dd``, with a different value in every cell and sample so that mixed-up rows show."""
+    dd, cells, samples = _reordered_dd()
+    cells = AnnData(np.arange(6.0).reshape(6, 1), obs=cells.obs.assign(number=np.arange(6)))
+    samples = samples.assign(number=np.arange(4))
+    donors = pd.DataFrame({"number": [0, 1]}, index=pd.Index(["a", "b"], name="donor_id"))
+    return DonorData(D=donors, S=samples, C=cells, donor_id="donor_id", sample_id="sample_id"), cells
+
+
+def _state(dd):
+    """Everything a selection can change: the names and values at every level and how the levels are linked."""
+    samples = dd.levels["sample"]
+    return {
+        "donors": list(dd.obs_names),
+        "donor numbers": dd.obs["number"].tolist(),
+        "samples": list(samples.obs_names),
+        "sample numbers": samples.obs["number"].tolist(),
+        "sample donors": samples.obs["donor_id"].astype(str).tolist(),
+        "cells": list(dd.C.obs_names),
+        "cell numbers": dd.C.obs["number"].tolist(),
+        "cell values": np.asarray(dd.C.X).ravel().tolist(),
+        "cell samples": dd.C.obs["sample_id"].astype(str).tolist(),
+    }
+
+
+def _inplace(method):
+    def select(dd, key):
+        getattr(dd, method)(key, inplace=True)
+        return dd
+
+    return select
+
+
+# Every way to select each level. All of them must give the same object for the same selection.
+ROUTES = {
+    "donor": {
+        "filter_donors": lambda dd, key: dd.filter_donors(key),
+        "filter_donors inplace": _inplace("filter_donors"),
+        "sel": lambda dd, key: dd.sel(D_obs=key),
+        "getitem": lambda dd, key: dd[key],
+        "getitem with ellipsis": lambda dd, key: dd[key, ...],
+    },
+    "sample": {
+        "filter_samples": lambda dd, key: dd.filter_samples(key),
+        "filter_samples inplace": _inplace("filter_samples"),
+        "sel": lambda dd, key: dd.sel(S_obs=key),
+    },
+    "cell": {
+        "filter_cells": lambda dd, key: dd.filter_cells(key),
+        "filter_cells inplace": _inplace("filter_cells"),
+        "sel": lambda dd, key: dd.sel(C_obs=key),
+        "getitem": lambda dd, key: dd[:, :, key],
+        "getitem with ellipsis": lambda dd, key: dd[..., key, :],
+    },
+}
+LEVEL_NAMES = {
+    "donor": lambda dd: dd.obs_names,
+    "sample": lambda dd: dd.levels["sample"].obs_names,
+    "cell": lambda dd: dd.C.obs_names,
+}
+KEPT = {"donor": ["b"], "sample": ["s0", "s3"], "cell": ["c1", "c4", "c5"]}
+# Every form of the same selection, built from the names of the level in the order of the DonorData.
+KEY_FORMS = {
+    "Series in dd order": lambda names, kept: pd.Series(names.isin(kept), index=names),
+    "Series in reversed order": lambda names, kept: pd.Series(names.isin(kept), index=names)[::-1],
+    "Series in sorted order": lambda names, kept: pd.Series(names.isin(kept), index=names).sort_index(),
+    "Series with extra names": lambda names, kept: pd.Series(
+        [*names.isin(kept), True], index=[*names, "not in the object"]
+    ),
+    "nullable boolean Series": lambda names, kept: pd.Series(names.isin(kept), index=names, dtype="boolean")[::-1],
+    "numpy mask": lambda names, kept: names.isin(kept),
+    "list of booleans": lambda names, kept: names.isin(kept).tolist(),
+    "list of names": lambda names, kept: list(kept),
+    "numpy array of names": lambda names, kept: np.array(kept),
+    "Index of names": lambda names, kept: pd.Index(kept),
+}
+
+
+@pytest.mark.parametrize("level", ROUTES)
+@pytest.mark.parametrize("form", KEY_FORMS)
+def test_every_selection_route_gives_the_same_result(level, form):
+    reference, cells = _numbered_dd()
+    names, kept = LEVEL_NAMES[level](reference), KEPT[level]
+    expected = _state(reference.sel(**{f"{level[0].upper()}_obs": names.isin(kept)}))
+    assert expected[f"{level}s"] == [name for name in names if name in kept]
+    assert expected["cell values"] == cells[expected["cells"]].X.ravel().tolist()  # values follow the names
+
+    for route, select in ROUTES[level].items():
+        dd, _ = _numbered_dd()
+        key = KEY_FORMS[form](LEVEL_NAMES[level](dd), kept)
+        assert _state(select(dd, key)) == expected, f"{route} with {form}"
+
+
+@pytest.mark.parametrize("level", ROUTES)
+def test_names_in_another_order_select_the_same_units(level):
+    """``filter_*`` keeps the order of the object. ``sel`` and ``dd[...]`` follow anndata and take the order of the
+    names, within the grouping by donor and sample. Both must keep the same units with the same values."""
+    reference, cells = _numbered_dd()
+    kept = KEPT[level][::-1]
+    for route, select in ROUTES[level].items():
+        dd, _ = _numbered_dd()
+        state = _state(select(dd, kept))
+        assert sorted(state[f"{level}s"]) == sorted(kept), route
+        assert state["cell values"] == cells[state["cells"]].X.ravel().tolist(), route
+        assert state["cell samples"] == cells[state["cells"]].obs["sample_id"].tolist(), route
+        expected_donors = reference.levels["sample"].obs["donor_id"].astype(str)[state["samples"]].tolist()
+        assert state["sample donors"] == expected_donors, route
+
+
+@pytest.mark.parametrize("level", ROUTES)
+def test_query_and_callable_give_the_same_result_as_a_mask(level):
+    reference, _ = _numbered_dd()
+    names, kept = LEVEL_NAMES[level](reference), KEPT[level]
+    expected = _state(reference.sel(**{f"{level[0].upper()}_obs": names.isin(kept)}))
+    filter_level = f"filter_{level}s"
+    numbers = {"donor": [1], "sample": [0, 3], "cell": [1, 4, 5]}[level]
+    for key in (f"number in {numbers}", lambda table: table["number"].isin(numbers)):
+        dd, _ = _numbered_dd()
+        assert _state(getattr(dd, filter_level)(key)) == expected
+
+
+@pytest.mark.parametrize("level", ROUTES)
+def test_every_selection_route_rejects_a_series_without_names(level):
+    for select in ROUTES[level].values():
+        dd, _ = _numbered_dd()
+        key = pd.Series(LEVEL_NAMES[level](dd).isin(KEPT[level]))  # index 0, 1, 2, ...
+        with pytest.raises(ValueError, match="default index 0, 1, 2"):
+            select(dd, key)
+
+
+def test_unnamed_series_raises_even_if_the_cells_are_called_0_1_2():
+    """Cells without real names are called "0", "1", ...: the labels of an unnamed Series would match them."""
+    obs = pd.DataFrame({"donor_id": ["b", "a", "b", "a"], "n_counts": [10, 20, 30, 40]})
+    dd = DonorData.from_anndata(AnnData(np.zeros((4, 1)), obs=obs), "donor_id", columns=[])
+    assert list(dd.C.obs_names) == ["1", "3", "0", "2"]  # reordered
+    in_object_order = dd.C.obs["n_counts"].to_numpy() >= 30
+    for select in CELL_SELECTIONS.values():
+        with pytest.raises(ValueError, match="default index 0, 1, 2"):
+            select(dd, pd.Series(in_object_order))
+        assert sorted(select(dd, in_object_order).C.obs["n_counts"]) == [30, 40]  # an array goes by position
+        assert sorted(select(dd, dd.C.obs["n_counts"] >= 30).C.obs["n_counts"]) == [30, 40]  # named "0", "1", ...
+
+
+@pytest.mark.parametrize("select", DONOR_SELECTIONS.values(), ids=DONOR_SELECTIONS.keys())
+def test_missing_entries_of_a_mask_count_as_false(select):
+    donors = pd.DataFrame(
+        {"age": pd.array([61, pd.NA, 40], dtype="Int64"), "smoker": pd.array([True, pd.NA, False], dtype="boolean")},
+        index=pd.Index(["a", "b", "c"], name="donor_id"),
+    )
+    obs = pd.DataFrame({"donor_id": ["a", "b", "c"]}, index=["c0", "c1", "c2"])
+    dd = DonorData(D=donors, C=AnnData(np.zeros((3, 1)), obs=obs), donor_id="donor_id")
+    older = dd.obs["age"] > 50
+    assert older.isna().tolist() == [False, True, False]
+    assert list(select(dd, older).obs_names) == ["a"]
+    assert list(select(dd, dd.obs["age"] <= 50).obs_names) == ["c"]
+    assert list(select(dd, dd.obs["smoker"]).obs_names) == ["a"]
+
+
+FILTERS = {"donor": "filter_donors", "sample": "filter_samples", "cell": "filter_cells"}
+
+
+@pytest.mark.parametrize("level", ROUTES)
+def test_every_selection_route_rejects_unknown_names(level):
+    for select in ROUTES[level].values():
+        dd, _ = _numbered_dd()
+        with pytest.raises(KeyError, match="not in the object"):
+            select(dd, [KEPT[level][0], "not in the object"])
+
+
+@pytest.mark.parametrize("level", FILTERS)
+@pytest.mark.parametrize("key", [[0, 1], np.array([0, 1]), 0, np.int64(1), ["s0", 1]], ids=repr)
+def test_filters_reject_integers(level, key):
+    dd, _ = _numbered_dd()
+    with pytest.raises(TypeError, match=r"integers.*pass them as strings.*dd\[\.\.\.\]"):
+        getattr(dd, FILTERS[level])(key)
+
+
+@pytest.mark.parametrize("level", FILTERS)
+def test_filters_reject_slices(level):
+    dd, _ = _numbered_dd()
+    with pytest.raises(TypeError, match=r"slice.*dd\[\.\.\.\]"):
+        getattr(dd, FILTERS[level])(slice(0, 2))
+
+
+def test_numeric_identifiers_are_selected_as_text():
+    donors = pd.DataFrame(index=pd.Index([101, 102], name="donor_id"))
+    obs = pd.DataFrame({"donor_id": [101, 102]}, index=["c0", "c1"])
+    dd = DonorData(D=donors, C=AnnData(np.zeros((2, 1)), obs=obs), donor_id="donor_id")
+    assert list(dd.filter_donors(["102"]).obs_names) == ["102"]
+    with pytest.raises(TypeError, match="integers"):
+        dd.filter_donors([102])
