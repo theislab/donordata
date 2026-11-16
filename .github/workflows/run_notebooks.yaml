@@ -1,0 +1,37 @@
+name: Run Notebooks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        notebook:
+          - "docs/tutorials/getting_started.ipynb"
+          - "docs/tutorials/ehr_cohort.ipynb"
+          - "docs/tutorials/patient_cohort.ipynb"
+          - "docs/tutorials/perturbation_screen.ipynb"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        run: pip install uv
+      - name: Install donordata and notebook dependencies
+        run: uv pip install --system ".[ehr,ml,tutorials]" "patpy @ git+https://github.com/lueckenlab/patpy.git" nbconvert ipykernel
+      - name: Run ${{ matrix.notebook }}
+        run: jupyter nbconvert --to notebook --execute ${{ matrix.notebook }}
