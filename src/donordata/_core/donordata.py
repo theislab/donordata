@@ -21,8 +21,8 @@ from donordata._core.fields import DAnn
 logger = logging.getLogger(__name__)
 
 
-def _log_missing_labels(labels: pd.Series, units: str, key: str, verb: str = "Dropping", shown: int = 10) -> None:
-    """Warn which units are dropped or ignored because their ``key`` is missing or a string such as ``"nan"``."""
+def _log_missing_labels(labels: pd.Series, units: str, key: str, shown: int = 10) -> None:
+    """Warn which units are dropped because their ``key`` is missing or a string such as ``"nan"``."""
     dropped = labels[_utils.is_missing_label(labels)]
     if dropped.empty:
         return
@@ -32,10 +32,12 @@ def _log_missing_labels(labels: pd.Series, units: str, key: str, verb: str = "Dr
     )
     more = f" and {len(dropped) - shown} more" if len(dropped) > shown else ""
     logger.warning(
-        f"{verb} {len(dropped)} {units} with a missing '{key}' (empty, or a value such as NaN, None, 'nan' or 'NA'): "
+        f"Dropping {len(dropped)} {units} with a missing '{key}' (empty, or a value such as NaN, None, 'nan' or 'NA'): "
         f"{names}{more}. If these are real names, rename them first."
     )
 
+
+MISSING_GROUP = "nan"
 
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
@@ -751,7 +753,8 @@ class DonorData:
         groupby
             Column of ``C.obs`` defining cell groups, for example cell types.
         groups
-            Groups that must reach ``min_cells``. Defaults to every group of ``groupby``.
+            Groups that must reach ``min_cells``. Defaults to every group of ``groupby`` except
+            ``"nan"``, the cells whose value is missing.
         level
             ``"donor"`` or ``"sample"``.
         inplace
@@ -766,7 +769,7 @@ class DonorData:
             keep = np.diff(self._offsets(level)) >= min_cells
         else:
             counts = self._group_counts(groupby, level)
-            groups = list(counts.columns) if groups is None else list(groups)
+            groups = [g for g in counts.columns if g != MISSING_GROUP] if groups is None else list(groups)
             missing = [g for g in groups if g not in counts.columns]
             if missing:
                 raise KeyError(f"Groups {missing} not found in C.obs['{groupby}'].")
@@ -890,9 +893,8 @@ class DonorData:
             labels = membership.columns if isinstance(membership, pd.DataFrame) else pd.RangeIndex(membership.shape[1])
             counts = _utils.group_sum(membership, codes, len(names))
             return pd.DataFrame(counts, index=names, columns=pd.Index(labels.astype(str), name=groupby))
-        group_codes, categories = _group_codes(self._C.obs[groupby], groupby)
-        member = group_codes >= 0
-        flat = codes[member] * len(categories) + group_codes[member]
+        group_codes, categories = _group_codes(self._C.obs[groupby])
+        flat = codes * len(categories) + group_codes
         counts = np.bincount(flat, minlength=len(names) * len(categories)).reshape(len(names), len(categories))
         return pd.DataFrame(counts, index=names, columns=pd.Index(categories, name=groupby))
 
@@ -914,8 +916,8 @@ class DonorData:
             Column of ``C.obs`` with cell groups, for example cell types, or a key of ``C.obsm`` with
             a cells by groups membership matrix. A membership matrix allows overlapping groups, such
             as the neighbourhoods of Milo, and yields the units by neighbourhoods count matrix.
-            Cells whose value in the column is missing, or a string such as ``"nan"`` or ``"NA"``, are
-            ignored with a warning.
+            Cells whose value in the column is missing, or a string such as ``"nan"`` or ``"NA"``, form
+            the group ``"nan"``.
         normalize
             Return fractions that sum to one per unit instead of counts.
         clr
@@ -1390,8 +1392,8 @@ class DonorData:
             Layer of ``C`` to aggregate, ``X`` by default. Raw counts suit differential testing.
         groupby
             Column of ``C.obs``, for example cell types, giving one profile per unit and group.
-            Cells whose value is missing, or a string such as ``"nan"`` or ``"NA"``, are ignored with a
-            warning.
+            Cells whose value is missing, or a string such as ``"nan"`` or ``"NA"``, form the group
+            ``"nan"``.
         func
             Aggregation, see :meth:`aggregate`.
         min_cells
@@ -1420,8 +1422,8 @@ class DonorData:
             groups = self._C.obs[groupby]
             if rows is not None:
                 groups = groups.iloc[rows]
-            group_codes, categories = _group_codes(groups, groupby)
-            codes = np.where(group_codes >= 0, unit_codes * len(categories) + group_codes, -1)
+            group_codes, categories = _group_codes(groups)
+            codes = unit_codes * len(categories) + group_codes
             n_groups = len(names) * len(categories)
 
         counts = np.bincount(codes[codes >= 0], minlength=n_groups)
@@ -1828,12 +1830,16 @@ def _drop_missing_names(level: AnnData | MuData, units: str, key: str) -> AnnDat
     return level[~missing] if missing.any() else level
 
 
-def _group_codes(groups: pd.Series, key: str, verb: str = "Ignoring") -> tuple[np.ndarray, pd.Index]:
-    """Code of the group of every cell and the group names. Cells with a missing group get ``-1`` and a warning."""
-    _log_missing_labels(groups, "cells", key, verb)
-    groups = groups.where(~_utils.is_missing_label(groups))
+def _group_codes(groups: pd.Series) -> tuple[np.ndarray, pd.Index]:
+    """Code of the group of every cell and the group names. Cells with a missing group form the group ``"nan"``."""
+    missing = _utils.is_missing_label(groups)
+    groups = groups.where(~missing)
     categories = _observed_categories(groups)
-    return pd.Categorical(groups, categories=categories).codes, categories
+    codes = pd.Categorical(groups, categories=categories).codes.astype(np.int64)
+    if missing.any():
+        codes[missing] = len(categories)
+        categories = categories.astype(str).append(pd.Index([MISSING_GROUP]))
+    return codes, categories
 
 
 def _observed_categories(groups: pd.Series) -> pd.Index:

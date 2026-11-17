@@ -21,8 +21,8 @@ First release of DonorData as a package of its own, split from cellink.
 - `nest` and `collapse` drop donors whose grouping value is missing, with a warning.
 - `train_test_split`, `kfold` and `subsample_cells` treat a missing `stratify`, `groups` or `groupby` value as a group
   of its own.
-- `composition`, `pseudobulk` and `filter_donors_by_cells` ignore cells whose `groupby` value is missing, with a
-  warning.
+- `composition` and `pseudobulk` count cells whose `groupby` value is missing as the group `"nan"`;
+  `filter_donors_by_cells` only requires that group when it is listed in `groups`.
 - `train_test_split` and `kfold` match a `stratify` given as a `pandas.Series` to the donors by name. Before, they
   read it by position, which assigned wrong classes when the Series was in another order than the donors.
 
