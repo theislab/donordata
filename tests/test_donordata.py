@@ -1,3 +1,4 @@
+import anndata as ad
 import mudata as md
 import numpy as np
 import pandas as pd
@@ -401,3 +402,25 @@ def test_donor_level_is_only_called_D(cells, genotypes):
     assert not hasattr(dd, "G") and not hasattr(dd, "G_type")
     with pytest.raises(TypeError):
         DonorData(G=genotypes, C=cells, donor_id="patient")
+
+
+def test_selecting_donors_keeps_the_categories_of_donor_level_anndata():
+    rng = np.random.default_rng(0)
+    var = pd.DataFrame(
+        {"a0": pd.Categorical(["A", "C", "G", "T"] * 5), "chrom": pd.Categorical(["1"] * 10 + ["2"] * 10)},
+        index=[f"v{j}" for j in range(20)],
+    )
+    D = ad.AnnData(
+        X=rng.integers(0, 3, size=(6, 20)).astype(np.int8),
+        obs=pd.DataFrame({"sex": pd.Categorical(["F", "M"] * 3)}, index=[f"d{i}" for i in range(6)]),
+        var=var,
+    )
+    C = ad.AnnData(
+        X=np.zeros((12, 1)), obs=pd.DataFrame({"donor_id": [f"d{i % 6}" for i in range(12)]}, index=[f"c{i}" for i in range(12)])
+    )
+    dd = DonorData(D=D, C=C, donor_id="donor_id")
+    sub = dd.sel(D_obs=[0, 2])
+    assert list(sub.D.var["a0"].cat.categories) == ["A", "C", "G", "T"]
+    assert list(sub.D.obs["sex"].cat.categories) == ["F", "M"]
+    assert list(dd.sel(D_var=[0, 1]).D.var["chrom"].cat.categories) == ["1", "2"]
+    np.testing.assert_array_equal(sub.D.X, D.X[[0, 2]])
