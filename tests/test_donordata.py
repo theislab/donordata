@@ -866,7 +866,7 @@ def test_whole_numbers_stored_as_floats_match_integer_identifiers():
 
 
 def test_get_df_gives_one_column_per_time_point_for_an_ehrdata_variable():
-    ed = pytest.importorskip("ehrdata")
+    ed = pytest.importorskip("ehrdata", exc_type=ImportError)
     values = np.arange(12.0).reshape(2, 2, 3)
     donors = ed.EHRData(
         X=values,

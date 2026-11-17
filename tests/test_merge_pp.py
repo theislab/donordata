@@ -73,7 +73,7 @@ def test_concat_outer_keeps_every_column_of_donor_matrices():
 
 
 def test_concat_rejects_ehrdata_levels():
-    ed = pytest.importorskip("ehrdata")
+    ed = pytest.importorskip("ehrdata", exc_type=ImportError)
     import pandas as pd
     from anndata import AnnData
 
