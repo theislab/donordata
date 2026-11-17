@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
-from anndata.abc import CSRDataset
+from anndata.abc import CSCDataset, CSRDataset
 from mudata import MuData
 
 AGGREGATIONS = ("sum", "mean", "var", "count_nonzero", "median", "min", "max")
@@ -40,10 +40,23 @@ def build_mudata(make: Callable[[], MuData]) -> MuData:
         return make()
 
 
+def _has_backed_matrix(adata: AnnData) -> bool:
+    matrices = [adata.X, *adata.layers.values()]
+    return any(isinstance(m, CSRDataset | CSCDataset) for m in matrices)
+
+
 def copy_container(container: AnnData | MuData) -> AnnData | MuData:
-    """Copy an AnnData or MuData, keeping the global tables of a MuData as they are."""
+    """Copy an AnnData or MuData, keeping the global tables of a MuData as they are.
+
+    Backed sparse matrices of a lazily read level, which ``AnnData.copy`` cannot copy, are read into
+    memory; dask arrays stay lazy.
+    """
     if isinstance(container, MuData):
+        if any(_has_backed_matrix(mod) for mod in container.mod.values()):
+            return build_mudata(lambda: container[:].copy())
         return build_mudata(container.copy)
+    if _has_backed_matrix(container):
+        return container[:].copy()
     return container.copy()
 
 

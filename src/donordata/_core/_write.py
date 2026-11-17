@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import dask.array as da
+import h5py
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 import zarr
 from anndata import AnnData
+from anndata.abc import CSCDataset, CSRDataset
 from anndata.io import write_elem
 from mudata import MuData
 
@@ -45,9 +48,8 @@ def _write_anndata_zarr_dense_x_chunked(
     dense_layers = {k: v for k, v in layers.items() if hasattr(v, "ndim") and not sp.issparse(v)}
     sparse_layers = {k: v for k, v in layers.items() if k not in dense_layers}
 
-    placeholder = sp.csr_array((adata.n_obs, adata.n_vars), dtype=X.dtype)
     shell = AnnData(
-        X=placeholder,
+        X=sp.csr_array((adata.n_obs, adata.n_vars), dtype=np.float32),
         obs=adata.obs,
         var=adata.var,
         obsm=dict(adata.obsm),
@@ -57,6 +59,8 @@ def _write_anndata_zarr_dense_x_chunked(
         layers=dict(sparse_layers),
         uns=dict(adata.uns),
     )
+    if adata.raw is not None:
+        shell.raw = adata.raw.to_adata()
     write_elem(f, key, shell)
     del f[key]["X"]
     _write_dense_array_zarr_chunked(f"{zarr_path}/{key}/X", X, chunks)
@@ -78,8 +82,8 @@ def write_mudata(f, key: str, mdata: MuData) -> None:
     write_elem(group, "var", mdata.var)
     for slot in ("obsm", "varm", "obsp", "varp"):
         write_elem(group, slot, dict(getattr(mdata, slot)))
-    for slot in ("obsmap", "varmap"):
-        write_elem(group, slot, {name: np.asarray(value) for name, value in getattr(mdata, slot).items()})
+    write_elem(group, "obsmap", _obsmap(mdata))
+    write_elem(group, "varmap", {name: np.asarray(value) for name, value in mdata.varmap.items()})
     write_elem(group, "uns", dict(mdata.uns))
     mods = group.create_group("mod")
     for name, modality in mdata.mod.items():
@@ -88,6 +92,16 @@ def write_mudata(f, key: str, mdata: MuData) -> None:
     group.attrs["encoding-type"] = "MuData"
     group.attrs["encoding-version"] = "0.1.0"
     group.attrs["axis"] = int(mdata.axis)
+
+
+def _obsmap(mdata: MuData) -> dict[str, np.ndarray]:
+    """1-based row of every cell in each modality, 0 where it is not measured, matched by name.
+
+    mudata 0.3 keeps the map of the parent object in a view, whose modalities are already subset.
+    """
+    if not mdata.obs_names.is_unique:
+        return {name: np.asarray(value) for name, value in mdata.obsmap.items()}
+    return {name: mod.obs_names.get_indexer(mdata.obs_names) + 1 for name, mod in mdata.mod.items()}
 
 
 def is_ehrdata(obj) -> bool:
@@ -104,7 +118,8 @@ def pack_obsm(obsm) -> tuple[dict, dict[str, np.ndarray]]:
     for key, value in entries.items():
         if not isinstance(value, pd.DataFrame) or value.shape[1] == 0 or value.dtypes.nunique() != 1:
             continue
-        if pd.api.types.is_numeric_dtype(value.dtypes.iloc[0]):
+        dtype = value.dtypes.iloc[0]
+        if isinstance(dtype, np.dtype) and np.issubdtype(dtype, np.number):
             entries[key] = value.to_numpy()
             columns[key] = np.asarray(value.columns.astype(str), dtype=str)
     return entries, columns
@@ -164,6 +179,8 @@ def is_ehrdata_group(group) -> bool:
 
 
 def _write_level(f, key: str, container, is_table: bool, is_zarr: bool, zarr_path, chunks) -> None:
+    if container.is_view and any(isinstance(m, da.Array) for m in matrices_of(container)):
+        container = container.copy()
     if isinstance(container, MuData):
         write_mudata(f, key, container)
         return
@@ -190,6 +207,41 @@ def _write_level(f, key: str, container, is_table: bool, is_zarr: bool, zarr_pat
         group = slots_group(f[key]).require_group("obsm_columns")
         for name, names in columns.items():
             write_elem(group, name, names)
+
+
+def matrices_of(container) -> list:
+    """``X`` and the layers of an AnnData, or of every modality of a MuData."""
+    if isinstance(container, MuData):
+        return [m for mod in container.mod.values() for m in matrices_of(mod)]
+    if container.is_view:
+        container = container._adata_ref
+    return [container.X, *container.layers.values()]
+
+
+def storage_paths(container) -> set[Path]:
+    """Files and stores that the matrices of a lazily read ``container`` still read from."""
+    paths = set()
+    for matrix in matrices_of(container):
+        if isinstance(matrix, CSRDataset | CSCDataset):
+            paths.add(_path_of(matrix.group))
+        elif isinstance(matrix, da.Array):
+            for value in matrix.__dask_graph__().values():
+                value = getattr(value, "value", value)
+                if isinstance(value, zarr.Array | h5py.Dataset):
+                    paths.add(_path_of(value))
+    return {p for p in paths if p is not None}
+
+
+def reads_from(container, path) -> bool:
+    """Whether the matrices of ``container`` still read from the file or store at ``path``."""
+    return Path(path).resolve() in storage_paths(container)
+
+
+def _path_of(element) -> Path | None:
+    if isinstance(element, h5py.Dataset | h5py.Group):
+        return Path(element.file.filename).resolve()
+    root = getattr(element.store, "root", None)
+    return Path(root).resolve() if root is not None else None
 
 
 def write_group(dd, f, zarr_path: str | None = None, x_chunks=None) -> None:
