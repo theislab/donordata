@@ -12,6 +12,20 @@ and this project adheres to [Semantic Versioning][].
 
 First release of DonorData as a package of its own, split from cellink.
 
+### Changed
+
+- Donors, samples and cells whose donor or sample identifier is missing are dropped with a warning that names
+  them. Before, a missing identifier became a donor or sample called `"nan"` or `"None"`. A string that stands for
+  a missing value (`""`, `"NA"`, `"N/A"`, `"<NA>"`, `"nan"`, `"NaT"`, `"None"` or `"null"`, in any case) counts as
+  missing too and has to be renamed if it is a real name.
+- `nest` and `collapse` drop donors whose grouping value is missing, with a warning.
+- `train_test_split`, `kfold` and `subsample_cells` treat a missing `stratify`, `groups` or `groupby` value as a group
+  of its own.
+- `composition` and `pseudobulk` count cells whose `groupby` value is missing as the group `"nan"`;
+  `filter_donors_by_cells` only requires that group when it is listed in `groups`.
+- `train_test_split` and `kfold` match a `stratify` given as a `pandas.Series` to the donors by name. Before, they
+  read it by position, which assigned wrong classes when the Series was in another order than the donors.
+
 ### Added
 
 - `DonorData` with a donor level `D`, an optional sample level `S` and the cells `C`, where each level can be a

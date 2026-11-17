@@ -20,6 +20,25 @@ from donordata._core.fields import DAnn
 
 logger = logging.getLogger(__name__)
 
+
+def _log_missing_labels(labels: pd.Series, units: str, key: str, shown: int = 10) -> None:
+    """Warn which units are dropped because their ``key`` is missing or a string such as ``"nan"``."""
+    dropped = labels[_utils.is_missing_label(labels)]
+    if dropped.empty:
+        return
+    names = ", ".join(
+        repr(name) if str(name) == str(value) else f"{name!r} ({value!r})"
+        for name, value in dropped.iloc[:shown].items()
+    )
+    more = f" and {len(dropped) - shown} more" if len(dropped) > shown else ""
+    logger.warning(
+        f"Dropping {len(dropped)} {units} with a missing '{key}' (empty, or a value such as NaN, None, 'nan' or 'NA'): "
+        f"{names}{more}. If these are real names, rename them first."
+    )
+
+
+MISSING_GROUP = "nan"
+
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
 _RANK = {"donor": 0, "sample": 1, "cell": 2}
@@ -233,9 +252,11 @@ class DonorData:
         return value, False
 
     def _match(self, D, S, C, D_is_table: bool, S_is_table: bool) -> None:
+        D = _drop_missing_names(D, "donors", self.donor_id)
         if not D.obs_names.is_unique:
             raise ValueError("Donor identifiers in D must be unique.")
         if S is None:
+            _log_missing_labels(C.obs[self.donor_id], "cells", self.donor_id)
             cell_codes = _utils.codes_for(C.obs[self.donor_id], D.obs_names)
             present = np.bincount(cell_codes[cell_codes >= 0], minlength=D.n_obs) > 0
             if not present.any():
@@ -245,8 +266,11 @@ class DonorData:
                 new_position = np.cumsum(present) - 1
                 cell_codes = np.where(cell_codes >= 0, new_position[np.maximum(cell_codes, 0)], -1)
         else:
+            S = _drop_missing_names(S, "samples", self.sample_id)
             if not S.obs_names.is_unique:
                 raise ValueError("Sample identifiers in S must be unique.")
+            _log_missing_labels(S.obs[self.donor_id], "samples", self.donor_id)
+            _log_missing_labels(C.obs[self.sample_id], "cells", self.sample_id)
             sample_donors = _utils.codes_for(S.obs[self.donor_id], D.obs_names)
             cell_codes = _utils.codes_for(C.obs[self.sample_id], S.obs_names)
             linked = cell_codes >= 0
@@ -729,7 +753,8 @@ class DonorData:
         groupby
             Column of ``C.obs`` defining cell groups, for example cell types.
         groups
-            Groups that must reach ``min_cells``. Defaults to every group of ``groupby``.
+            Groups that must reach ``min_cells``. Defaults to every group of ``groupby`` except
+            ``"nan"``, the cells whose value is missing.
         level
             ``"donor"`` or ``"sample"``.
         inplace
@@ -744,7 +769,7 @@ class DonorData:
             keep = np.diff(self._offsets(level)) >= min_cells
         else:
             counts = self._group_counts(groupby, level)
-            groups = list(counts.columns) if groups is None else list(groups)
+            groups = [g for g in counts.columns if g != MISSING_GROUP] if groups is None else list(groups)
             missing = [g for g in groups if g not in counts.columns]
             if missing:
                 raise KeyError(f"Groups {missing} not found in C.obs['{groupby}'].")
@@ -774,7 +799,8 @@ class DonorData:
         fraction
             Fraction of cells to keep per unit instead of a fixed number. At least one cell is kept.
         groupby
-            Column of ``C.obs`` to stratify by within units, for example cell types.
+            Column of ``C.obs`` to stratify by within units, for example cell types. Cells whose value is
+            missing, or a string such as ``"nan"`` or ``"NA"``, form a group of their own.
         level
             ``"donor"`` or ``"sample"``.
         random_state
@@ -791,7 +817,7 @@ class DonorData:
             raise ValueError("Provide exactly one of n or fraction.")
         strata = self._codes(level)
         if groupby is not None:
-            group_codes, groups = pd.factorize(self._C.obs[groupby], use_na_sentinel=False)
+            group_codes, groups = pd.factorize(_utils.missing_as_na(self._C.obs[groupby]), use_na_sentinel=False)
             strata = strata * len(groups) + group_codes
         strata_codes, strata = pd.factorize(strata)
         sizes = np.bincount(strata_codes)
@@ -867,11 +893,8 @@ class DonorData:
             labels = membership.columns if isinstance(membership, pd.DataFrame) else pd.RangeIndex(membership.shape[1])
             counts = _utils.group_sum(membership, codes, len(names))
             return pd.DataFrame(counts, index=names, columns=pd.Index(labels.astype(str), name=groupby))
-        groups = self._C.obs[groupby]
-        categories = _observed_categories(groups)
-        group_codes = pd.Categorical(groups, categories=categories).codes
-        member = group_codes >= 0
-        flat = codes[member] * len(categories) + group_codes[member]
+        group_codes, categories = _group_codes(self._C.obs[groupby])
+        flat = codes * len(categories) + group_codes
         counts = np.bincount(flat, minlength=len(names) * len(categories)).reshape(len(names), len(categories))
         return pd.DataFrame(counts, index=names, columns=pd.Index(categories, name=groupby))
 
@@ -893,6 +916,8 @@ class DonorData:
             Column of ``C.obs`` with cell groups, for example cell types, or a key of ``C.obsm`` with
             a cells by groups membership matrix. A membership matrix allows overlapping groups, such
             as the neighbourhoods of Milo, and yields the units by neighbourhoods count matrix.
+            Cells whose value in the column is missing, or a string such as ``"nan"`` or ``"NA"``, form
+            the group ``"nan"``.
         normalize
             Return fractions that sum to one per unit instead of counts.
         clr
@@ -1367,6 +1392,8 @@ class DonorData:
             Layer of ``C`` to aggregate, ``X`` by default. Raw counts suit differential testing.
         groupby
             Column of ``C.obs``, for example cell types, giving one profile per unit and group.
+            Cells whose value is missing, or a string such as ``"nan"`` or ``"NA"``, form the group
+            ``"nan"``.
         func
             Aggregation, see :meth:`aggregate`.
         min_cells
@@ -1395,9 +1422,8 @@ class DonorData:
             groups = self._C.obs[groupby]
             if rows is not None:
                 groups = groups.iloc[rows]
-            categories = _observed_categories(groups)
-            group_codes = pd.Categorical(groups, categories=categories).codes
-            codes = np.where(group_codes >= 0, unit_codes * len(categories) + group_codes, -1)
+            group_codes, categories = _group_codes(groups)
+            codes = unit_codes * len(categories) + group_codes
             n_groups = len(names) * len(categories)
 
         counts = np.bincount(codes[codes >= 0], minlength=n_groups)
@@ -1450,7 +1476,8 @@ class DonorData:
         Parameters
         ----------
         by
-            Donor table column naming the new unit of every donor.
+            Donor table column naming the new unit of every donor. Donors whose value is missing, or a string
+            such as ``"nan"`` or ``"NA"``, are dropped with a warning, as for donor and sample identifiers.
         func
             Aggregation for donor table columns that vary within a unit, either one pandas
             aggregation for all numeric columns or a dict per column. Without it such columns are
@@ -1466,6 +1493,7 @@ class DonorData:
         DonorData
             With a donor table indexed by the values of ``by``.
         """
+        self = self._with_units(by)
         unit_codes, table = self._units_of(by, func=func, count_key=count_key)
         obsm = {}
         if obsm_func is not None:
@@ -1496,12 +1524,18 @@ class DonorData:
             _copy_matrices(samples, new._S)
         return new
 
+    def _with_units(self, by: str) -> DonorData:
+        """Drop the donors whose ``by`` is missing, as the constructor does for donor and sample identifiers."""
+        if by not in self.obs.columns:
+            raise KeyError(f"'{by}' not found in the donor table.")
+        _log_missing_labels(self.obs[by], "donors", by)
+        missing = _utils.is_missing_label(self.obs[by])
+        return self.filter_donors(~missing) if missing.any() else self
+
     def _units_of(self, by: str, *, func=None, count_key: str | None = None) -> tuple[np.ndarray, pd.DataFrame]:
         if by not in self.obs.columns:
             raise KeyError(f"'{by}' not found in the donor table.")
         units = self.obs[by]
-        if units.isna().any():
-            raise ValueError(f"'{by}' has missing values, every donor needs a unit.")
         unit_codes, unit_names = pd.factorize(pd.Series(_utils.string_labels(units)), sort=True)
         unit_names = pd.Index(np.asarray(unit_names, dtype=str), name=by)
         first = _utils.first_positions(unit_codes, len(unit_names))
@@ -1532,7 +1566,8 @@ class DonorData:
         Parameters
         ----------
         by
-            Donor table column naming the new donor of every current donor.
+            Donor table column naming the new donor of every current donor. Donors whose value is missing, or a string
+            such as ``"nan"`` or ``"NA"``, are dropped with a warning, as for donor and sample identifiers.
         keep_in_samples
             Keep the moved columns in the sample table as well.
 
@@ -1544,6 +1579,7 @@ class DonorData:
         """
         if self._S is not None:
             raise ValueError("This DonorData already has a sample level.")
+        self = self._with_units(by)
         unit_codes, table = self._units_of(by)
         table = table.drop(columns=[f"n_{self.donor_id}"])
         samples = _utils.copy_container(self._D)
@@ -1588,19 +1624,36 @@ class DonorData:
             _copy_matrices(samples, new._D)
         return new
 
-    def _strata(self, stratify) -> np.ndarray:
-        if stratify is None:
-            return np.zeros(self.n_donors, dtype=np.int64)
-        values = self.obs[stratify] if isinstance(stratify, str) else pd.Series(np.asarray(stratify))
-        if len(values) != self.n_donors:
-            raise ValueError("stratify must have one value per donor.")
-        return pd.factorize(values, use_na_sentinel=False)[0]
+    def _split_values(self, stratify, groups) -> tuple[pd.Series | None, pd.Series | None]:
+        """``stratify`` and ``groups`` as one value per donor, with every missing value as NaN."""
+        if isinstance(stratify, str):
+            stratify = self.obs[stratify]
+        elif isinstance(stratify, pd.Series):
+            stratify = _utils.align_series(stratify, self.obs_names, "donors", "stratify")
+        elif stratify is not None:
+            if len(stratify) != self.n_donors:
+                raise ValueError("stratify must have one value per donor.")
+            stratify = pd.Series(np.asarray(stratify), index=self.obs_names)
+        if groups is not None:
+            if groups not in self.obs.columns:
+                raise KeyError(f"'{groups}' not found in the donor table.")
+            groups = self.obs[groups]
+        return (
+            None if stratify is None else _utils.missing_as_na(stratify),
+            None if groups is None else _utils.missing_as_na(groups),
+        )
 
     def _split_units(self, stratify, groups) -> tuple[np.ndarray, np.ndarray]:
-        strata = self._strata(stratify)
+        stratify, groups = self._split_values(stratify, groups)
+        if stratify is None:
+            strata = np.zeros(self.n_donors, dtype=np.int64)
+        else:
+            strata = pd.factorize(stratify, use_na_sentinel=False)[0]
         if groups is None:
             return np.arange(self.n_donors), strata
-        group_codes = pd.factorize(self.obs[groups], use_na_sentinel=False)[0]
+        group_codes = pd.factorize(groups)[0]
+        alone = group_codes < 0
+        group_codes[alone] = group_codes.max() + 1 + np.arange(alone.sum())
         group_strata = np.array([np.bincount(strata[group_codes == g]).argmax() for g in range(group_codes.max() + 1)])
         return group_codes, group_strata
 
@@ -1624,10 +1677,13 @@ class DonorData:
             Fraction of donors, or of groups with ``groups``, held out for testing, or their number
             when an integer.
         stratify
-            Donor table column, or one value per donor, whose proportions are kept in both sets. With
-            ``groups`` each group counts with its most frequent value.
+            Donor table column, or one value per donor, whose proportions are kept in both sets. A
+            ``pandas.Series`` is matched to the donors by name, an array or list by position. With
+            ``groups`` each group counts with its most frequent value. Donors whose value is missing, or
+            a string such as ``"nan"`` or ``"NA"``, form a stratum of their own.
         groups
-            Donor table column whose groups are never split.
+            Donor table column whose groups are never split. A donor whose group is missing is a group
+            of its own.
         random_state
             Seed of the random generator.
 
@@ -1670,9 +1726,12 @@ class DonorData:
         n_splits
             Number of folds. Every donor is in the test set of exactly one fold.
         stratify
-            Donor table column, or one value per donor, balanced across folds.
+            Donor table column, or one value per donor, balanced across folds. A ``pandas.Series`` is
+            matched to the donors by name, an array or list by position. Donors whose value is
+            missing, or a string such as ``"nan"`` or ``"NA"``, form a stratum of their own.
         groups
             Donor table column whose groups, such as sites or studies, are never split across folds.
+            A donor whose group is missing is a group of its own.
         random_state
             Seed of the random generator.
 
@@ -1761,6 +1820,26 @@ class DonorData:
             f"(n_D_obs={n_donors:,}, n_D_vars={n_donor_vars:,}, {samples}"
             f"n_C_obs={n_cells:,}, n_C_vars={n_cell_vars:,})"
         )
+
+
+def _drop_missing_names(level: AnnData | MuData, units: str, key: str) -> AnnData | MuData:
+    """``level`` without the rows whose name is missing or a string such as ``"nan"``, with a warning."""
+    names = level.obs_names.to_series()
+    _log_missing_labels(names, units, key)
+    missing = _utils.is_missing_label(names)
+    return level[~missing] if missing.any() else level
+
+
+def _group_codes(groups: pd.Series) -> tuple[np.ndarray, pd.Index]:
+    """Code of the group of every cell and the group names. Cells with a missing group form the group ``"nan"``."""
+    missing = _utils.is_missing_label(groups)
+    groups = groups.where(~missing)
+    categories = _observed_categories(groups)
+    codes = pd.Categorical(groups, categories=categories).codes.astype(np.int64)
+    if missing.any():
+        codes[missing] = len(categories)
+        categories = categories.astype(str).append(pd.Index([MISSING_GROUP]))
+    return codes, categories
 
 
 def _observed_categories(groups: pd.Series) -> pd.Index:
