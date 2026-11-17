@@ -4,11 +4,13 @@ import copy as _copy
 import logging
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from importlib.metadata import version
 from typing import Literal
 
 import h5py
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 import zarr
 from anndata import AnnData
 from mudata import MuData
@@ -134,7 +136,10 @@ class DonorData:
         if D is None:
             names = pd.unique(pd.Series(_utils.string_labels(S.obs[donor_id])).dropna())
             D = pd.DataFrame(index=pd.Index(np.asarray(names, dtype=str), name=donor_id))
+        given = D
         D, D_is_table = self._prepare_level(D, donor_id)
+        if (obsm or obsp) and D is given:
+            D = _detached(D)
         for key, value in (obsm or {}).items():
             D.obsm[key] = value
         for key, value in (obsp or {}).items():
@@ -185,16 +190,20 @@ class DonorData:
         for key in (donor_id, sample_id):
             if key is not None and key not in obs.columns:
                 raise ValueError(f"'{key}' not found in adata.obs")
-        donor_codes, donors = pd.factorize(pd.Series(_utils.string_labels(obs[donor_id])), sort=True)
-        donor_first = _utils.first_positions(donor_codes, len(donors))
+        donor_labels = pd.Series(_utils.string_labels(obs[donor_id]))
         ids = {donor_id} if sample_id is None else {donor_id, sample_id}
-        if sample_id is None:
-            unit_codes, unit_first = donor_codes, donor_first
-        else:
+        if sample_id is not None:
             unit_codes, samples = pd.factorize(pd.Series(_utils.string_labels(obs[sample_id])), sort=True)
             unit_first = _utils.first_positions(unit_codes, len(samples))
-            if not _utils.is_constant_within(obs[donor_id], unit_codes, unit_first):
+            known = donor_labels.notna().to_numpy() & (unit_codes >= 0)
+            per_sample = donor_labels[known].groupby(unit_codes[known])
+            if (per_sample.nunique() > 1).any():
                 raise ValueError(f"Some samples in '{sample_id}' contain cells of several donors.")
+            donor_labels = donor_labels.fillna(pd.Series(unit_codes).map(per_sample.first()))
+        donor_codes, donors = pd.factorize(donor_labels, sort=True)
+        donor_first = _utils.first_positions(donor_codes, len(donors))
+        if sample_id is None:
+            unit_codes, unit_first = donor_codes, donor_first
 
         if columns is None:
             candidates = [c for c in obs.columns if c not in ids]
@@ -219,37 +228,23 @@ class DonorData:
         if sample_id is None:
             return cls(D=table, C=cells, donor_id=donor_id)
         sample_table = obs.iloc[unit_first][[donor_id, *sample_columns]].copy()
-        sample_table[donor_id] = np.asarray(_utils.string_labels(sample_table[donor_id]), dtype=str)
+        sample_table[donor_id] = np.asarray(donor_labels.iloc[unit_first], dtype=object)
         sample_table.index = pd.Index(np.asarray(samples, dtype=str), name=sample_id)
         return cls(D=table, S=sample_table, C=cells, donor_id=donor_id, sample_id=sample_id)
 
     def _prepare_level(self, value, key: str) -> tuple[AnnData | MuData, bool]:
         if isinstance(value, pd.DataFrame):
-            table = value
-            if key in table.columns and table.index.name != key:
-                table = table.set_index(key, drop=False)
-            elif table.index.name is None:
-                table = table.rename_axis(key)
-            elif table.index.name != key:
-                raise ValueError(f"'{key}' must be a column of the table or the name of its index")
-            table = table.copy()
-            table.index = table.index.astype(str)
-            return AnnData(obs=table), True
-
+            return AnnData(obs=_indexed_by(value, key, "a column of the table or the name of its index")), True
         if not isinstance(value, AnnData | MuData):
             raise TypeError(f"Expected a DataFrame, AnnData or MuData object, got {type(value).__name__}.")
-        if isinstance(value, MuData) and value.obs.index.name is None:
-            for mod in value.mod.values():
-                if mod.obs.index.name == key:
-                    value.obs.index.name = key
-                    break
-        if key in value.obs.columns and value.obs.index.name != key:
-            value.obs = value.obs.set_index(key, drop=False)
-        elif value.obs.index.name is None:
-            value.obs.index.name = key
-        elif value.obs.index.name != key:
-            raise ValueError(f"'{key}' must be in obs or set as its index")
-        return value, False
+        obs = value.obs
+        if isinstance(value, MuData) and obs.index.name is None:
+            if any(mod.obs.index.name == key for mod in value.mod.values()):
+                obs = obs.rename_axis(key)
+        obs = _indexed_by(obs, key, "in obs or set as its index")
+        if obs.index.name == value.obs.index.name and obs.equals(value.obs):
+            return value, False
+        return _detached(value, obs), False
 
     def _match(self, D, S, C, D_is_table: bool, S_is_table: bool) -> None:
         D = _drop_missing_names(D, "donors", self.donor_id)
@@ -301,13 +296,16 @@ class DonorData:
         if order.size != C.n_obs or not np.array_equal(order, np.arange(C.n_obs)):
             C = C[order]
 
-        self._D, self._S, self._C = D, S, C
-        self._D_is_table, self._S_is_table = D_is_table, S_is_table
         if S is not None and self.donor_id in C.obs.columns:
-            expected = D.obs_names[_utils.codes_for(S.obs[self.donor_id], D.obs_names)]
-            stated = pd.Index(_utils.string_labels(C.obs[self.donor_id]), dtype=str)
-            if not np.array_equal(stated.to_numpy(), expected.to_numpy()[self.sample_codes]):
+            sample_donors = D.obs_names[_utils.codes_for(S.obs[self.donor_id], D.obs_names)].to_numpy()
+            expected = sample_donors[_utils.codes_for(C.obs[self.sample_id], S.obs_names)]
+            stated = np.asarray(_utils.string_labels(C.obs[self.donor_id]), dtype=object)
+            known = ~pd.isna(stated)
+            if not np.array_equal(stated[known].astype(str), expected[known].astype(str)):
                 raise ValueError(f"C.obs['{self.donor_id}'] disagrees with the donor of the sample of some cells.")
+
+        self._D, self._S, self._C = _own(D), _own(S), _own(C)
+        self._D_is_table, self._S_is_table = D_is_table, S_is_table
 
     def _raise_empty(self, D, S, C) -> None:
         if D.n_obs == 0 or C.n_obs == 0 or (S is not None and S.n_obs == 0):
@@ -335,7 +333,7 @@ class DonorData:
         new.donor_id = self.donor_id
         new.sample_id = self.sample_id
         new._var_dims_to_sync = list(self._var_dims_to_sync if var_dims_to_sync is None else var_dims_to_sync)
-        new.uns = dict(self.uns)
+        new.uns = _copy.deepcopy(self.uns)
         new._match(D, S, C, self._D_is_table, self._S_is_table)
         return new
 
@@ -380,9 +378,10 @@ class DonorData:
     @D.setter
     def D(self, value: pd.DataFrame | AnnData | MuData) -> None:
         D, is_table = self._prepare_level(value, self.donor_id)
-        if is_table:
-            _carry_over_matrices(self._D, D)
+        previous = self._D
         self._match(D, self._S, self._C, is_table, self._S_is_table)
+        if is_table:
+            _carry_over_matrices(previous, self._D)
 
     @property
     def S(self) -> pd.DataFrame | AnnData | None:
@@ -398,9 +397,10 @@ class DonorData:
         S, is_table = self._prepare_level(value, self.sample_id)
         if self.donor_id not in S.obs.columns:
             raise ValueError(f"'{self.donor_id}' not found in the sample table.")
-        if is_table:
-            _carry_over_matrices(self._S, S)
+        previous = self._S
         self._match(self._D, S, self._C, self._D_is_table, is_table)
+        if is_table:
+            _carry_over_matrices(previous, self._S)
 
     @property
     def C(self) -> AnnData | MuData:
@@ -574,10 +574,13 @@ class DonorData:
                 continue
             kept.append(key)
             frame = D.obsm[key]
-            if isinstance(frame, pd.DataFrame) and not frame.columns.equals(C.var_names):
+            if not isinstance(frame, pd.DataFrame):
+                continue
+            columns = C.var_names[C.var_names.isin(frame.columns)]
+            if not frame.columns.equals(columns):
                 if D.is_view:
                     D = _utils.copy_container(D)
-                D.obsm[key] = D.obsm[key].reindex(columns=C.var_names)
+                D.obsm[key] = D.obsm[key][columns]
         return D, kept
 
     def _subset(
@@ -598,6 +601,9 @@ class DonorData:
             C = C[_utils.by_label(C_obs, C.obs_names, "cells")]
         if not _utils.is_full_slice(C_var):
             C = C[:, _utils.by_label(C_var, C.var_names, "cell variables")]
+        D = D[:] if D is self._D else D
+        S = S[:] if S is not None and S is self._S else S
+        C = C[:] if C is self._C else C
         D, kept = self._sync_var_dims(D, C)
         return self._derive(D, S, C, kept)
 
@@ -1504,11 +1510,13 @@ class DonorData:
                 obsm[key] = values
 
         cell_units = pd.Categorical(table.index[unit_codes[self.donor_codes]], categories=table.index)
-        cells = _utils.shallow_with_obs(self._C, self._C.obs.assign(**{by: cell_units}))
+        cells = _utils.shallow_with_obs(self._C, self._C.obs.assign(**{by: cell_units}))[:]
         synced = [k for k in self._var_dims_to_sync if k in obsm]
         if self._S is None:
-            return DonorData(D=table, C=cells, donor_id=by, obsm=obsm, uns=dict(self.uns), var_dims_to_sync=synced)
-        samples = self._S.copy()
+            return DonorData(
+                D=table, C=cells, donor_id=by, obsm=obsm, uns=_copy.deepcopy(self.uns), var_dims_to_sync=synced
+            )
+        samples = _utils.copy_container(self._S)
         samples.obs[by] = np.asarray(table.index[unit_codes[self.sample_donor_codes]], dtype=str)
         new = DonorData(
             D=table,
@@ -1517,7 +1525,7 @@ class DonorData:
             donor_id=by,
             sample_id=self.sample_id,
             obsm=obsm,
-            uns=dict(self.uns),
+            uns=_copy.deepcopy(self.uns),
             var_dims_to_sync=synced,
         )
         if self._S_is_table:
@@ -1587,7 +1595,9 @@ class DonorData:
         if not keep_in_samples:
             samples.obs = samples.obs.drop(columns=[c for c in table.columns if c in samples.obs.columns])
         sample_side = samples.obs if self._D_is_table else samples
-        new = DonorData(D=table, S=sample_side, C=self._C, donor_id=by, sample_id=self.donor_id, uns=dict(self.uns))
+        new = DonorData(
+            D=table, S=sample_side, C=self._C[:], donor_id=by, sample_id=self.donor_id, uns=_copy.deepcopy(self.uns)
+        )
         if self._D_is_table:
             _copy_matrices(samples, new._S)
         return new
@@ -1606,7 +1616,7 @@ class DonorData:
         if self._S is None:
             raise ValueError("This DonorData has no sample level.")
         codes = self.sample_donor_codes
-        samples = self._S.copy()
+        samples = _utils.copy_container(self._S)
         extra = [c for c in self._D.obs.columns if c not in samples.obs.columns]
         if extra:
             donor_columns = _utils.broadcast(self._D.obs[extra], codes, samples.obs_names)
@@ -1619,7 +1629,7 @@ class DonorData:
             else:
                 samples.obsm[key] = matrix[codes]
         side = samples.obs if self._S_is_table else samples
-        new = DonorData(D=side, C=self._C, donor_id=self.sample_id, uns=dict(self.uns))
+        new = DonorData(D=side, C=self._C[:], donor_id=self.sample_id, uns=_copy.deepcopy(self.uns))
         if self._S_is_table:
             _copy_matrices(samples, new._D)
         return new
@@ -1820,6 +1830,50 @@ class DonorData:
             f"(n_D_obs={n_donors:,}, n_D_vars={n_donor_vars:,}, {samples}"
             f"n_C_obs={n_cells:,}, n_C_vars={n_cell_vars:,})"
         )
+
+
+_VIEW_X_WRITES_THROUGH = tuple(int(part) for part in version("anndata").split(".")[:2]) < (0, 13)
+
+
+def _writes_through(level: AnnData | MuData) -> bool:
+    """Whether assigning ``X`` of ``level`` would write into the in-memory matrix of the object it views."""
+    if not (_VIEW_X_WRITES_THROUGH and level.is_view):
+        return False
+    if isinstance(level, MuData):
+        return any(_writes_through(mod) for mod in level.mod.values())
+    return isinstance(level._adata_ref.X, np.ndarray | sp.spmatrix | sp.sparray)
+
+
+def _own(level: AnnData | MuData | None) -> AnnData | MuData | None:
+    """``level``, or a copy of it if assigning its ``X`` would write into another object."""
+    if level is not None and _writes_through(level):
+        return _utils.copy_container(level)
+    return level
+
+
+def _indexed_by(obs: pd.DataFrame, key: str, where: str) -> pd.DataFrame:
+    """A copy of ``obs`` indexed by the identifiers as text, with a ``key`` column of the same text if it has one."""
+    if key in obs.columns and obs.index.name != key:
+        obs = obs.set_index(key, drop=False)
+    elif obs.index.name is None:
+        obs = obs.rename_axis(key)
+    elif obs.index.name != key:
+        raise ValueError(f"'{key}' must be {where}")
+    obs = obs.copy()
+    obs.index = pd.Index(np.asarray(_utils.as_text(obs.index.to_series()), dtype=object), name=key)
+    if key in obs.columns:
+        obs[key] = np.asarray(obs.index, dtype=object)
+    return obs
+
+
+def _detached(level: AnnData | MuData, obs: pd.DataFrame | None = None) -> AnnData | MuData:
+    """A new object with the data of ``level`` and ``obs``, so that changes to it never reach ``level``."""
+    obs = level.obs.copy() if obs is None else obs
+    if type(level) is AnnData:
+        return _utils.shallow_with_obs(level, obs)
+    new = _utils.copy_container(level)
+    new.obs = obs
+    return new
 
 
 def _drop_missing_names(level: AnnData | MuData, units: str, key: str) -> AnnData | MuData:
