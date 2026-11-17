@@ -1,5 +1,3 @@
-"""Units with a missing donor or sample identifier are dropped with a warning; a missing value elsewhere is kept as a group of its own or ignored."""
-
 import numpy as np
 import pandas as pd
 import pytest
