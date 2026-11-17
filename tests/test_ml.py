@@ -81,3 +81,20 @@ def test_sample_level_bags_and_balanced_weights(dd3):
     labels = dataset._donor_fields["donor_y"]
     totals = {label: weights[labels == label].sum().item() for label in np.unique(labels)}
     np.testing.assert_allclose(list(totals.values()), 1.0)
+
+
+def test_donor_features_of_a_mudata_donor_level_follow_the_donors():
+    import mudata as md
+    import pandas as pd
+    from anndata import AnnData
+
+    from donordata import DonorData
+
+    first = AnnData(X=np.array([[0.0], [1.0]]), obs=pd.DataFrame(index=["D0", "D1"]))
+    second = AnnData(X=np.array([[10.0], [0.0]]), obs=pd.DataFrame(index=["D1", "D0"]))
+    donors = md.MuData({"a": first, "b": second})
+    donors.obs.index.name = "donor"
+    cells = AnnData(X=np.ones((4, 2)), obs=pd.DataFrame({"donor": ["D0", "D0", "D1", "D1"]}, index=list("wxyz")))
+    dataset = MILDataset(DonorData(D=donors, C=cells, donor_id="donor"))
+    features = {dataset[i]["donor_id"]: dataset[i]["donor_x"].tolist() for i in range(2)}
+    assert features == {"D0": [0.0, 0.0], "D1": [1.0, 10.0]}

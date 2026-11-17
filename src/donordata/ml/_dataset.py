@@ -214,7 +214,13 @@ class MILDataset(Dataset):
             if donor_layer is not None:
                 raise KeyError(f"'{donor_layer}' not found in the obsm of the {self.level} level.")
             return None
-        mods = list(container.mod.values()) if isinstance(container, MuData) else [container]
+        if isinstance(container, MuData):
+            parts = [modality(container, name) for name in container.mod]
+            if any(rows is not None for _, rows in parts):
+                raise ValueError(f"Every modality of the {self.level} level must cover every unit.")
+            mods = [adata for adata, _ in parts]
+        else:
+            mods = [container]
         matrices = [m for m in (_resolve(mod, donor_layer) for mod in mods) if m is not None]
         if not matrices:
             if donor_layer is not None:

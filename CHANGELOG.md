@@ -12,6 +12,30 @@ and this project adheres to [Semantic Versioning][].
 
 First release of DonorData as a package of its own, split from cellink.
 
+### Changed
+
+- Donors, samples and cells whose donor or sample identifier is missing are dropped with a warning that names
+  them. Before, a missing identifier became a donor or sample called `"nan"` or `"None"`. A string that stands for
+  a missing value (`""`, `"NA"`, `"N/A"`, `"<NA>"`, `"nan"`, `"NaT"`, `"None"` or `"null"`, in any case) counts as
+  missing too and has to be renamed if it is a real name.
+- `nest` and `collapse` drop donors whose grouping value is missing, with a warning.
+- `train_test_split`, `kfold` and `subsample_cells` treat a missing `stratify`, `groups` or `groupby` value as a group
+  of its own.
+- `composition` and `pseudobulk` count cells whose `groupby` value is missing as the group `"nan"`;
+  `filter_donors_by_cells` only requires that group when it is listed in `groups`.
+- `train_test_split` and `kfold` match a `stratify` given as a `pandas.Series` to the donors by name. Before, they
+  read it by position, which assigned wrong classes when the Series was in another order than the donors.
+- Selections, splits, `nest`, `flatten`, `collapse` and `subsample_cells` return objects that do not share levels or
+  `uns` with the original.
+- The constructor and the level setters leave their inputs unchanged; a rejected assignment leaves the object
+  unchanged; replacing a table keeps the matrices of the remaining units.
+- Identifiers are text in the index and the identifier column; whole-number floats match integer identifiers.
+- `from_anndata` gives a cell without a donor the donor of its sample.
+- MuData modalities are matched by name in `aggregate`, `pseudobulk`, `get_df` and `MILDataset`.
+- `get_df` gives one column per time point for an EHRData variable.
+- `concat(join="outer")` keeps all columns of donor and sample matrices; `concat` rejects EHRData levels.
+- The `filter_*` methods accept a set of names.
+
 ### Added
 
 - `DonorData` with a donor level `D`, an optional sample level `S` and the cells `C`, where each level can be a
@@ -31,3 +55,17 @@ First release of DonorData as a package of its own, split from cellink.
 - `donordata.ml.MILDataset` with bags per donor or per sample.
 - Reading of files in the versions 0.1.0 and 0.2.0 written by cellink. Their donor level `G` is read into `D`
   with a warning.
+
+### Fixed
+
+- `sel`, `dd[...]`, `D_var` and `C_var` match a boolean `pandas.Series` to the axis by name, as `filter_donors`,
+  `filter_samples` and `filter_cells` already do. Before, they applied it by position, which selected the wrong
+  samples or cells when the Series was built from the input tables, because `DonorData` reorders samples and
+  cells. A Series whose index does not contain the names of the axis, such as the default index 0, 1, 2, ..., now
+  raises a `ValueError` instead of selecting by position, also when the cells have no real names and are
+  called `"0"`, `"1"`, .... Boolean arrays and lists are still applied by position. A missing entry (NA) of a
+  mask counts as `False`.
+- `dd[mask, ...]` with an ellipsis and a boolean array or Series no longer raises an error.
+- `filter_donors`, `filter_samples` and `filter_cells` raise a `KeyError` for a name that does not exist, as `sel`
+  and `dd[...]` do. Before, they ignored it. They raise a `TypeError` for integers, which they used to read as
+  names, and for slices. Names are given as text; positions are selected with `dd[...]` or `sel`.
