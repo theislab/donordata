@@ -23,7 +23,8 @@ def _slot_lines(container, slots, highlight_keys, labels=None) -> list[Text]:
         mapping = getattr(container, slot, None)
         if mapping is None:
             continue
-        keys = list(mapping.columns if slot in ("obs", "var") else mapping.keys())
+        # anndata 0.13 lists X as layer None
+        keys = [k for k in (mapping.columns if slot in ("obs", "var") else mapping.keys()) if k is not None]
         if not keys:
             continue
         line = Text(f"    {labels.get(slot, slot)}: ")

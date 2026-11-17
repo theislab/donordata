@@ -1,5 +1,6 @@
 import warnings
 
+import anndata as ad
 import h5py
 import mudata as md
 import numpy as np
@@ -15,6 +16,10 @@ from donordata._core import _utils
 
 if hasattr(md, "set_options"):
     md.set_options(pull_on_update=False)
+
+
+def _open(path):
+    return h5py.File(path) if str(path).endswith(".h5") else zarr.open(str(path), mode="r")
 
 
 def test_from_anndata_with_samples_places_columns_at_their_level(dd3, patients):
@@ -262,12 +267,14 @@ def test_ehrdata_donor_level(tmp_path, cells, patients, extension, ehrdata):
     assert "tem" in repr(dd)
     path = tmp_path / f"ehr{extension}"
     dd.write_dd(str(path))
-    store = h5py.File(path) if extension == ".dd.h5" else zarr.open(str(path), mode="r")
+    store = _open(path)
     assert set(store.keys()) == {"D", "C"}
-    assert "tem" in store["D"]
-    plain = read_elem(store["D"])
-    assert type(plain).__name__ == "AnnData" and plain.obsm["_ed_ondisk_layers_tem_data"].shape == (len(patients), 3, 4)
-    if extension == ".dd.h5":
+    h5 = extension == ".dd.h5"
+    assert store["D"].attrs["ehrdata-encoding-type" if h5 else "encoding-type"] == "ehrdata"
+    np.testing.assert_allclose(ed.io.read_elem(store["D"]).layers["tem_data"], series)
+    plain = read_elem(store["D"] if h5 else store["D"]["anndata"])
+    assert type(plain).__name__ == "AnnData" and plain.n_obs == len(patients)
+    if h5:
         store.close()
     loaded = read_dd(path)
     assert type(loaded.D).__name__ == "EHRData"
@@ -288,7 +295,8 @@ def test_donor_level_is_built_from_the_sample_table(dd3):
         DonorData(C=dd3.C, donor_id=dd3.donor_id)
 
 
-def test_ehrdata_sample_level(tmp_path, dd3, ehrdata):
+@pytest.mark.parametrize("extension", [".dd.h5", ".dd.zarr"])
+def test_ehrdata_sample_level(tmp_path, dd3, extension, ehrdata):
     ed = ehrdata
     rng = np.random.default_rng(1)
     samples = dd3.S.copy()
@@ -304,7 +312,7 @@ def test_ehrdata_sample_level(tmp_path, dd3, ehrdata):
     assert type(dd.S).__name__ == "EHRData"
     sub = dd.filter_donors(dd.obs_names[:2])
     assert sub.S.layers["tem_data"].shape == (sub.n_samples, 2, 3)
-    path = tmp_path / "ehr_samples.dd.h5"
+    path = tmp_path / f"ehr_samples{extension}"
     sub.write_dd(str(path))
     loaded = read_dd(path)
     assert type(loaded.S).__name__ == "EHRData"
@@ -323,3 +331,77 @@ def test_group_sum_of_a_sparse_matrix_matches_dense_without_deprecations():
             expected = _utils.group_sum(dense, codes, 2, transform)
             np.testing.assert_allclose(_utils.group_sum(matrix, codes, 2, transform), expected)
             np.testing.assert_allclose(_utils.group_sum(sp.csr_array(dense), codes, 2, transform), expected)
+
+
+def _rich_ehrdata(ed, patients):
+    """EHRData with a 3D X, a sparse COO layer, datetimes, object columns with None and a numeric obsm frame."""
+    import sparse
+
+    n = len(patients)
+    series = np.random.default_rng(4).normal(size=(n, 3, 4))
+    obs = patients.assign(
+        visit=pd.date_range("2024-01-01", periods=n, freq="D"),
+        count=np.array([1, None] * (n // 2), dtype=object),
+        note=np.array(["a", None] * (n // 2), dtype=object),
+    )
+    return ed.EHRData(
+        X=series,
+        obs=obs,
+        var=pd.DataFrame(index=["sbp", "dbp", "crp"]),
+        layers={"coo": sparse.COO.from_numpy(np.where(series > 1, series, np.nan), fill_value=np.nan)},
+        obsm={"profile": pd.DataFrame(series[:, :, 0], index=obs.index, columns=["g1", "g2", "g3"])},
+        tem=pd.DataFrame({"time": pd.date_range("2024-01-01", periods=4, freq="h")}, index=[f"t{i}" for i in range(4)]),
+    )
+
+
+@pytest.mark.parametrize("extension", [".dd.h5", ".dd.zarr"])
+def test_ehrdata_level_is_stored_as_ehrdata_stores_it(tmp_path, cells, patients, extension, ehrdata):
+    sparse = pytest.importorskip("sparse")
+    edata = _rich_ehrdata(ehrdata, patients)
+    path = tmp_path / f"rich{extension}"
+    DonorData(D=edata, C=cells, donor_id="patient").write_dd(str(path))
+    store = _open(path)
+    slots = store["D"] if extension == ".dd.h5" else store["D"]["anndata"]
+    assert "profile" in slots["obsm_columns"]
+    # packed into one array
+    assert slots["obsm"]["profile"].attrs["encoding-type"] == "array"
+    if extension == ".dd.h5":
+        store.close()
+    loaded = read_dd(path)
+    D = loaded.D
+    np.testing.assert_allclose(D.X, edata.X)
+    assert isinstance(D.layers["coo"], sparse.COO)
+    np.testing.assert_allclose(D.layers["coo"].todense(), edata.layers["coo"].todense())
+    assert D.obs["visit"].iloc[1] == "2024-01-02T00:00:00" and D.tem["time"].iloc[1] == "2024-01-01T01:00:00"
+    assert D.obs["count"].dtype == "Int64" and D.obs["count"].isna().sum() == len(patients) // 2
+    assert D.obs["note"].iloc[0] == "a" and D.obs["note"].isna().sum() == len(patients) // 2
+    pd.testing.assert_frame_equal(D.obsm["profile"], edata.obsm["profile"], check_names=False)
+    if extension == ".dd.zarr":
+        assert isinstance(loaded.C.X, ad.abc.CSRDataset)
+    validate(loaded)
+
+
+def test_x_chunks_for_an_ehrdata_level_warn(tmp_path, cells, patients, ehrdata):
+    dd = DonorData(D=_rich_ehrdata(ehrdata, patients), C=cells, donor_id="patient")
+    with pytest.warns(UserWarning, match="x_chunks does not apply to the EHRData level D"):
+        dd.write_zarr_dd(str(tmp_path / "chunks.dd.zarr"), x_chunks={"D": (2, 2), "C": (8, 4)})
+    np.testing.assert_allclose(read_zarr_dd(tmp_path / "chunks.dd.zarr").D.X, dd.D.X)
+    # a shared shape is meant for C
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        dd.write_zarr_dd(str(tmp_path / "shared.dd.zarr"), x_chunks=(8, 4))
+
+
+def test_ehrdata_cell_level_is_rejected(cells, patients, ehrdata):
+    edata_cells = ehrdata.EHRData(X=cells.X, obs=cells.obs, var=cells.var)
+    with pytest.raises(TypeError, match="an EHRData belongs to D or S"):
+        DonorData(D=patients, C=edata_cells, donor_id="patient")
+
+
+def test_ehrdata_level_without_stamp_is_rejected(tmp_path, cells, patients, ehrdata):
+    path = tmp_path / "dev.dd.h5"
+    DonorData(D=_rich_ehrdata(ehrdata, patients), C=cells, donor_id="patient").write_dd(str(path))
+    with h5py.File(path, "a") as f:
+        del f["D"].attrs["ehrdata-encoding-type"]
+    with pytest.raises(ValueError, match="layout of a development version"):
+        read_dd(path)

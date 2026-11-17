@@ -18,7 +18,7 @@ from anndata.io import read_elem, sparse_dataset
 from mudata import MuData
 
 from donordata._core._utils import build_mudata
-from donordata._core._write import EHRDATA_LAYER_PREFIX, EHRDATA_X_KEY
+from donordata._core._write import ehrdata_io, is_ehrdata_group, slots_group
 from donordata._core.donordata import DonorData, _copy_matrices
 from donordata._core.schema import DONORDATA_ENCODING_TYPE, DONORDATA_ENCODING_VERSION, READABLE_ENCODING_VERSIONS
 
@@ -87,31 +87,6 @@ def _read_side(group, lazy: bool, var_columns=None):
     raise ValueError(f"Unknown encoding type {encoding!r} for {group.name}")
 
 
-def _read_ehrdata(group, lazy: bool):
-    try:
-        from ehrdata import EHRData
-    except ImportError as e:
-        raise ImportError(f"{group.name} holds an EHRData, install ehrdata to read it.") from e
-    adata = _read_anndata(group, lazy)
-    obsm = dict(adata.obsm)
-    X = obsm.pop(EHRDATA_X_KEY, adata.X)
-    layers = {name: layer for name, layer in adata.layers.items() if name is not None}
-    for name in [k for k in obsm if k.startswith(EHRDATA_LAYER_PREFIX)]:
-        layers[name.removeprefix(EHRDATA_LAYER_PREFIX)] = obsm.pop(name)
-    return EHRData(
-        X=X,
-        obs=adata.obs,
-        var=adata.var,
-        uns=dict(adata.uns),
-        obsm=obsm,
-        varm=dict(adata.varm),
-        obsp=dict(adata.obsp),
-        varp=dict(adata.varp),
-        layers=layers,
-        tem=read_elem(group["tem"]),
-    )
-
-
 def _unpack_obsm(group, container) -> None:
     """Turn the arrays that were written for numeric DataFrames in ``obsm`` back into DataFrames."""
     if "obsm_columns" not in group:
@@ -130,9 +105,14 @@ def _read_level(f, key: str, lazy: bool, var_columns=None):
         shell = read_elem(group)
         _unpack_obsm(group, shell)
         return shell.obs, shell
-    container = _read_ehrdata(group, lazy) if "tem" in group else _read_side(group, lazy, var_columns)
+    if is_ehrdata_group(group):
+        container = ehrdata_io(f"Reading the EHRData level {key}").read_elem(group)
+    elif "tem" in group:
+        raise ValueError(f"{group.name} holds an EHRData in the layout of a development version; write it again.")
+    else:
+        container = _read_side(group, lazy, var_columns)
     if isinstance(container, AnnData):
-        _unpack_obsm(group, container)
+        _unpack_obsm(slots_group(group), container)
     return container, None
 
 
@@ -206,7 +186,8 @@ def read_zarr_dd(path: str | Path, var_columns: list[str] | None = None) -> Dono
 
     ``X`` and layers stay on disk, dense ones as dask arrays and sparse ones as backed sparse matrices,
     so selecting a subset, for example a single cell type, only reads that subset, and
-    :meth:`DonorData.aggregate` reads them block by block.
+    :meth:`DonorData.aggregate` reads them block by block. A donor or sample level stored as an EHRData
+    is read into memory with :func:`ehrdata.io.read_elem`.
 
     Parameters
     ----------
