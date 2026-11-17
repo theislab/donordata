@@ -1,5 +1,3 @@
-"""Units with a missing donor or sample identifier are dropped with a warning; a missing value elsewhere is kept as a group of its own or ignored."""
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -151,18 +149,24 @@ MISSING_GROUPS = [None, np.nan, "NA", "nan", "None", ""]
 
 
 @pytest.mark.parametrize("missing", MISSING_GROUPS, ids=repr)
-def test_composition_and_pseudobulk_ignore_cells_with_a_missing_group(caplog, missing):
+def test_composition_and_pseudobulk_count_cells_with_a_missing_group_as_nan(caplog, missing):
     dd = _grouped_dd(["T", missing, "T", "B", "B", "B", "T", "T"])
     with caplog.at_level("WARNING"):
         fractions = dd.composition("cell_type")
         profiles = dd.pseudobulk(groupby="cell_type")
-    assert list(fractions.columns) == ["B", "T"]
-    assert fractions.loc["a"].tolist() == [0.0, 1.0]  # over the one cell of donor a that has a cell type
-    assert sorted(profiles.obs_names) == ["a_T", "b_B", "b_T", "c_B", "d_T"]
-    assert profiles.obs.loc["a_T", "n_cells"] == 1
-    assert caplog.text.count("Ignoring 1 cells with a missing 'cell_type'") == 2
-    assert "'c1'" in caplog.text
-    assert dd.n_cells == 8  # the object keeps the cell
+    assert list(fractions.columns) == ["B", "T", "nan"]
+    assert fractions.loc["a"].tolist() == [0.0, 0.5, 0.5]
+    assert fractions.loc["b"].tolist() == [0.5, 0.5, 0.0]
+    assert sorted(profiles.obs_names) == ["a_T", "a_nan", "b_B", "b_T", "c_B", "d_T"]
+    assert profiles.obs.loc["a_nan", "n_cells"] == 1
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("missing", MISSING_GROUPS, ids=repr)
+def test_filter_donors_by_cells_requires_the_missing_group_only_when_listed(missing):
+    dd = _grouped_dd(["T", missing, "T", "B", "B", "B", "T", "T"])
+    assert list(dd.filter_donors_by_cells(1, groupby="cell_type").obs_names) == ["b"]
+    assert list(dd.filter_donors_by_cells(1, groupby="cell_type", groups=["nan"]).obs_names) == ["a"]
 
 
 @pytest.mark.parametrize("missing", MISSING_GROUPS, ids=repr)

@@ -21,8 +21,8 @@ First release of DonorData as a package of its own, split from cellink.
 - `nest` and `collapse` drop donors whose grouping value is missing, with a warning.
 - `train_test_split`, `kfold` and `subsample_cells` treat a missing `stratify`, `groups` or `groupby` value as a group
   of its own.
-- `composition`, `pseudobulk` and `filter_donors_by_cells` ignore cells whose `groupby` value is missing, with a
-  warning.
+- `composition` and `pseudobulk` count cells whose `groupby` value is missing as the group `"nan"`;
+  `filter_donors_by_cells` only requires that group when it is listed in `groups`.
 - `train_test_split` and `kfold` match a `stratify` given as a `pandas.Series` to the donors by name. Before, they
   read it by position, which assigned wrong classes when the Series was in another order than the donors.
 - Selections, splits, `nest`, `flatten`, `collapse` and `subsample_cells` return objects that do not share levels or
@@ -48,7 +48,8 @@ First release of DonorData as a package of its own, split from cellink.
 - `nest`, `flatten` and `collapse` to change the levels.
 - `train_test_split` and `kfold` over donors, with stratification and groups.
 - `donordata.io` with `read_dd`, `read_h5_dd` and `read_zarr_dd`, and the on-disk format 0.3.0.
-- `concat`, `validate` and `register_donordata_namespace`.
+- `concat`, `validate` and `register_donordata_namespace`. `concat` returns sparse `obsm` matrices as scipy sparse
+  arrays (`csr_array`), since scipy 2 deprecates sparse matrices (`csr_matrix`).
 - `donordata.ml.MILDataset` with bags per donor or per sample.
 - Reading of files in the versions 0.1.0 and 0.2.0 written by cellink. Their donor level `G` is read into `D`
   with a warning.
