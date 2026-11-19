@@ -419,7 +419,8 @@ def test_selecting_donors_keeps_the_categories_of_donor_level_anndata():
         var=var,
     )
     C = ad.AnnData(
-        X=np.zeros((12, 1)), obs=pd.DataFrame({"donor_id": [f"d{i % 6}" for i in range(12)]}, index=[f"c{i}" for i in range(12)])
+        X=np.zeros((12, 1)),
+        obs=pd.DataFrame({"donor_id": [f"d{i % 6}" for i in range(12)]}, index=[f"c{i}" for i in range(12)]),
     )
     dd = DonorData(D=D, C=C, donor_id="donor_id")
     sub = dd.sel(D_obs=[0, 2])
@@ -427,6 +428,64 @@ def test_selecting_donors_keeps_the_categories_of_donor_level_anndata():
     assert list(sub.D.obs["sex"].cat.categories) == ["F", "M"]
     assert list(dd.sel(D_var=[0, 1]).D.var["chrom"].cat.categories) == ["1", "2"]
     np.testing.assert_array_equal(sub.D.X, D.X[[0, 2]])
+
+
+def _genotype_dd(names=None):
+    names = names or [f"d{i}" for i in range(6)]
+    var = pd.DataFrame(
+        {"a0": pd.Categorical(["A", "C"] * 10, categories=["A", "C", "G", "T"])}, index=[f"v{j}" for j in range(20)]
+    )
+    D = ad.AnnData(
+        X=np.zeros((6, 20), dtype=np.int8),
+        obs=pd.DataFrame({"sex": pd.Categorical(["F"] * 6, categories=["F", "M"])}, index=names),
+        var=var,
+    )
+    D.obsm["pcs"] = np.arange(12, dtype=float).reshape(6, 2)
+    obs = pd.DataFrame(
+        {"donor_id": [f"d{i % 5}" for i in range(12)], "cell_type": ["T", "B"] * 6}, index=[f"c{i}" for i in range(12)]
+    )
+    C = ad.AnnData(X=np.ones((12, 3), dtype=np.float32), obs=obs, var=pd.DataFrame(index=["g0", "g1", "g2"]))
+    return D, C
+
+
+DONOR_LEVEL_ROUTES = {
+    "cells only": lambda dd: dd[..., dd.C.obs["cell_type"] == "T", :],
+    "genes only": lambda dd: dd.sel(C_var=["g0", "g1"]),
+    "filter_cells": lambda dd: dd.filter_cells(dd.C.obs["cell_type"] == "T"),
+    "sel of donors": lambda dd: dd.sel(D_obs=["d0", "d2"]),
+    "filter_donors": lambda dd: dd.filter_donors(["d1"]),
+    "pseudobulk": lambda dd: dd.pseudobulk(),
+}
+
+
+@pytest.mark.parametrize("route", DONOR_LEVEL_ROUTES.values(), ids=DONOR_LEVEL_ROUTES.keys())
+def test_donor_level_anndata_keeps_its_categories_on_every_route(route):
+    D, C = _genotype_dd()
+    out = route(DonorData(D=D, C=C, donor_id="donor_id"))
+    if isinstance(out, DonorData):
+        assert list(out.D.var["a0"].cat.categories) == ["A", "C", "G", "T"]
+        assert list(out.D.obs["sex"].cat.categories) == ["F", "M"]
+
+
+@pytest.mark.parametrize("route", [None, *DONOR_LEVEL_ROUTES.values()], ids=["build", *DONOR_LEVEL_ROUTES.keys()])
+@pytest.mark.parametrize(
+    "names", [None, ["d0", "d1", "d2", "d3", "d4", "nan"]], ids=["named", "a donor without a name"]
+)
+def test_views_of_donor_level_anndata_never_prune_categories(monkeypatch, route, names):
+    D, C = _genotype_dd(names)
+    pruning = []
+    init_as_view = ad.AnnData._init_as_view
+
+    def record(self, adata_ref, *args, **kwargs):
+        if adata_ref.n_vars == D.n_vars:
+            pruning.append(ad.settings.remove_unused_categories)
+        return init_as_view(self, adata_ref, *args, **kwargs)
+
+    monkeypatch.setattr(ad.AnnData, "_init_as_view", record)
+    dd = DonorData(D=D, C=C, donor_id="donor_id")
+    if route is not None:
+        route(dd)
+    assert not any(pruning)
 
 
 def _reordered_dd():

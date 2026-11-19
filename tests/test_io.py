@@ -353,6 +353,22 @@ def test_writing_into_the_store_a_zarr_backed_matrix_reads_from_raises(tmp_path)
     _matrices_equal(read_dd(path, lazy=False).C.X, X)
 
 
+def test_writing_into_the_file_an_h5py_backed_matrix_reads_from_raises(tmp_path):
+    X = np.arange(1, 13, dtype=np.float32).reshape(6, 2)
+    path = tmp_path / "cohort.dd.h5"
+    _small_dd(X).write_dd(path)
+    before = path.read_bytes()
+    lazy = read_dd(path, lazy=True)
+    with h5py.File(path, "r") as f:
+        lazy.C.X = f["C"]["X"]
+        with pytest.raises(ValueError, match="reads its matrices from"):
+            lazy.write_dd(path)
+    del lazy
+    gc.collect()
+    assert path.read_bytes() == before
+    _matrices_equal(read_dd(path, lazy=False).C.X, X)
+
+
 @pytest.mark.parametrize("extension", [".dd.h5", ".dd.zarr"])
 def test_nullable_columns_of_donor_matrices_keep_their_type(tmp_path, extension):
     dd = _small_dd()

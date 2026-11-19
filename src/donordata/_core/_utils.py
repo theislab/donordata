@@ -70,9 +70,18 @@ def is_missing_label(values: pd.Series) -> np.ndarray:
     The single definition of a missing identifier: everything that turns a column into donor or sample
     identifiers goes through :func:`string_labels`, which uses it.
     """
-    distinct = values.cat.categories if isinstance(values.dtype, pd.CategoricalDtype) else pd.unique(values)
-    missing_text = [label for label in distinct if str(label).strip().lower() in MISSING_LABELS]
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        codes = values.cat.codes.to_numpy()
+        missing_codes = [i for i, label in enumerate(values.cat.categories) if _is_missing_text(label)]
+        return (codes < 0) | np.isin(codes, missing_codes) if missing_codes else codes < 0
+    missing_text = [label for label in pd.unique(values) if _is_missing_text(label)]
+    if not missing_text:
+        return values.isna().to_numpy()
     return (values.isna() | values.isin(missing_text)).to_numpy()
+
+
+def _is_missing_text(label) -> bool:
+    return str(label).strip().lower() in MISSING_LABELS
 
 
 def missing_as_na(values: pd.Series) -> pd.Series:
@@ -100,10 +109,40 @@ def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
     """Position of every value in ``categories``, or ``-1`` when it is not one of them."""
-    labels = np.asarray(string_labels(values), dtype=object)
-    codes = np.asarray(pd.Index(categories).get_indexer(labels), dtype=np.int64)
-    codes[pd.isna(labels)] = -1
-    return codes
+    return _codes(values, pd.Index(categories), with_missing=False)[0]
+
+
+def codes_and_missing(values: pd.Series, categories: pd.Index) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`codes_for` and :func:`is_missing_label` of ``values`` in one pass over them."""
+    return _codes(values, pd.Index(categories), with_missing=True)
+
+
+def _codes(values: pd.Series, categories: pd.Index, with_missing: bool) -> tuple[np.ndarray, np.ndarray | None]:
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        value_codes = values.cat.codes.to_numpy()
+        labels = np.asarray(string_labels(pd.Series(values.cat.categories)), dtype=object)
+        distinct_missing = pd.isna(labels)
+        lookup = np.asarray(categories.get_indexer(labels), dtype=np.int64)
+        lookup[distinct_missing] = -1
+        present = value_codes >= 0
+        codes = np.full(len(value_codes), -1, dtype=np.int64)
+        codes[present] = lookup[value_codes[present]]
+        missing = ~present
+        missing[present] = distinct_missing[value_codes[present]]
+        return codes, missing
+    codes = np.asarray(categories.get_indexer(as_text(values).to_numpy(dtype=object)), dtype=np.int64)
+    if categories.astype(str).str.strip().str.lower().isin(MISSING_LABELS).any():
+        missing = is_missing_label(values)
+        codes[missing] = -1
+        return codes, missing
+    if not with_missing:
+        return codes, None
+    # missing labels never match
+    missing = np.zeros(len(codes), dtype=bool)
+    unmatched = np.flatnonzero(codes < 0)
+    if unmatched.size:
+        missing[unmatched] = is_missing_label(values.iloc[unmatched])
+    return codes, missing
 
 
 def first_positions(codes: np.ndarray, n_groups: int) -> np.ndarray:
