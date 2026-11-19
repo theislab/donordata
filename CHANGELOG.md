@@ -35,7 +35,7 @@ First release of DonorData as a package of its own, split from cellink.
 - `get_df` gives one column per time point for an EHRData variable.
 - `concat(join="outer")` keeps all columns of donor and sample matrices; `concat` rejects EHRData levels.
 - The `filter_*` methods accept a set of names.
-- Requires Python 3.12 or newer and anndata 0.13 or newer, with the numpy (2.1), pandas (2.3), scipy (1.14) and h5py
+- Requires Python 3.12 or newer and anndata 0.13.1 or newer, with the numpy (2.1), pandas (2.3), scipy (1.14) and h5py
   (3.11) versions that anndata 0.13 needs.
 - Selections and the constructor keep the levels as views instead of copying them. Assigning `X` of a level copies
   that level first, as anndata 0.13 does for every view, so the original never changes.
