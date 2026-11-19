@@ -12,9 +12,9 @@ from anndata import AnnData
 from donordata._core.donordata import DonorData
 
 
-def _stack_rows(values: list):
+def _stack_rows(values: list, join: str):
     if all(isinstance(v, pd.DataFrame) for v in values):
-        return pd.concat(values, axis=0, join="inner")
+        return pd.concat(values, axis=0, join=join)
     if any(sp.issparse(v) for v in values):
         return sp.vstack([sp.csr_array(v) for v in values])
     return np.concatenate([np.asarray(v) for v in values], axis=0)
@@ -31,7 +31,7 @@ def _concat_level(containers: list, is_table: bool, key: str, label, keys, join)
         for name in sorted(set.intersection(*(set(c.obsm.keys()) for c in containers))):
             values = [c.obsm[name] for c in containers]
             if len({v.shape[1] for v in values}) == 1 or all(isinstance(v, pd.DataFrame) for v in values):
-                obsm[name] = _stack_rows(values)
+                obsm[name] = _stack_rows(values, join)
         return table, obsm
     adata = ad.concat(containers, join=join, merge="same", label=label, keys=keys if label else None)
     adata.obs.index.name = key
@@ -86,6 +86,8 @@ def concat(
         raise ValueError("Cannot concatenate sample levels of different kinds, use all tables or all AnnData.")
     if any(not isinstance(dd.C, AnnData) for dd in dds):
         raise ValueError("concat requires C to be an AnnData in every input.")
+    if any(type(level).__name__ == "EHRData" for dd in dds for level in (dd._D, dd._S)):
+        raise ValueError("concat cannot combine EHRData levels, their time axes would be lost.")
 
     for level in ("donor", "sample") if sample_id is not None else ("donor",):
         names = pd.Index(np.concatenate([dd.levels[level].obs_names.to_numpy() for dd in dds]))

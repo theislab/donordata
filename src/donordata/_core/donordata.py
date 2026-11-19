@@ -5,12 +5,14 @@ import copy as _copy
 import logging
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from importlib.metadata import version
 from typing import Literal
 
 import anndata as ad
 import h5py
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 import zarr
 from anndata import AnnData
 from mudata import MuData
@@ -21,6 +23,25 @@ from donordata._core._write import is_ehrdata, reads_from, write_group
 from donordata._core.fields import DAnn
 
 logger = logging.getLogger(__name__)
+
+
+def _log_missing_labels(labels: pd.Series, units: str, key: str, shown: int = 10) -> None:
+    """Warn which units are dropped because their ``key`` is missing or a string such as ``"nan"``."""
+    dropped = labels[_utils.is_missing_label(labels)]
+    if dropped.empty:
+        return
+    names = ", ".join(
+        repr(name) if str(name) == str(value) else f"{name!r} ({value!r})"
+        for name, value in dropped.iloc[:shown].items()
+    )
+    more = f" and {len(dropped) - shown} more" if len(dropped) > shown else ""
+    logger.warning(
+        f"Dropping {len(dropped)} {units} with a missing '{key}' (empty, or a value such as NaN, None, 'nan' or 'NA'): "
+        f"{names}{more}. If these are real names, rename them first."
+    )
+
+
+MISSING_GROUP = "nan"
 
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
@@ -131,7 +152,10 @@ class DonorData:
         if D is None:
             names = pd.unique(pd.Series(_utils.string_labels(S.obs[donor_id])).dropna())
             D = pd.DataFrame(index=pd.Index(np.asarray(names, dtype=str), name=donor_id))
+        given = D
         D, D_is_table = self._prepare_level(D, donor_id)
+        if (obsm or obsp) and D is given:
+            D = _detached(D)
         for key, value in (obsm or {}).items():
             D.obsm[key] = value
         for key, value in (obsp or {}).items():
@@ -182,16 +206,20 @@ class DonorData:
         for key in (donor_id, sample_id):
             if key is not None and key not in obs.columns:
                 raise ValueError(f"'{key}' not found in adata.obs")
-        donor_codes, donors = pd.factorize(pd.Series(_utils.string_labels(obs[donor_id])), sort=True)
-        donor_first = _utils.first_positions(donor_codes, len(donors))
+        donor_labels = pd.Series(_utils.string_labels(obs[donor_id]))
         ids = {donor_id} if sample_id is None else {donor_id, sample_id}
-        if sample_id is None:
-            unit_codes, unit_first = donor_codes, donor_first
-        else:
+        if sample_id is not None:
             unit_codes, samples = pd.factorize(pd.Series(_utils.string_labels(obs[sample_id])), sort=True)
             unit_first = _utils.first_positions(unit_codes, len(samples))
-            if not _utils.is_constant_within(obs[donor_id], unit_codes, unit_first):
+            known = donor_labels.notna().to_numpy() & (unit_codes >= 0)
+            per_sample = donor_labels[known].groupby(unit_codes[known])
+            if (per_sample.nunique() > 1).any():
                 raise ValueError(f"Some samples in '{sample_id}' contain cells of several donors.")
+            donor_labels = donor_labels.fillna(pd.Series(unit_codes).map(per_sample.first()))
+        donor_codes, donors = pd.factorize(donor_labels, sort=True)
+        donor_first = _utils.first_positions(donor_codes, len(donors))
+        if sample_id is None:
+            unit_codes, unit_first = donor_codes, donor_first
 
         if columns is None:
             candidates = [c for c in obs.columns if c not in ids]
@@ -216,42 +244,30 @@ class DonorData:
         if sample_id is None:
             return cls(D=table, C=cells, donor_id=donor_id)
         sample_table = obs.iloc[unit_first][[donor_id, *sample_columns]].copy()
-        sample_table[donor_id] = np.asarray(_utils.string_labels(sample_table[donor_id]), dtype=str)
+        sample_table[donor_id] = np.asarray(donor_labels.iloc[unit_first], dtype=object)
         sample_table.index = pd.Index(np.asarray(samples, dtype=str), name=sample_id)
         return cls(D=table, S=sample_table, C=cells, donor_id=donor_id, sample_id=sample_id)
 
     def _prepare_level(self, value, key: str) -> tuple[AnnData | MuData, bool]:
         if isinstance(value, pd.DataFrame):
-            table = value
-            if key in table.columns and table.index.name != key:
-                table = table.set_index(key, drop=False)
-            elif table.index.name is None:
-                table = table.rename_axis(key)
-            elif table.index.name != key:
-                raise ValueError(f"'{key}' must be a column of the table or the name of its index")
-            table = table.copy()
-            table.index = table.index.astype(str)
-            return AnnData(obs=table), True
-
+            return AnnData(obs=_indexed_by(value, key, "a column of the table or the name of its index")), True
         if not isinstance(value, AnnData | MuData):
             raise TypeError(f"Expected a DataFrame, AnnData or MuData object, got {type(value).__name__}.")
-        if isinstance(value, MuData) and value.obs.index.name is None:
-            for mod in value.mod.values():
-                if mod.obs.index.name == key:
-                    value.obs.index.name = key
-                    break
-        if key in value.obs.columns and value.obs.index.name != key:
-            value.obs = value.obs.set_index(key, drop=False)
-        elif value.obs.index.name is None:
-            value.obs.index.name = key
-        elif value.obs.index.name != key:
-            raise ValueError(f"'{key}' must be in obs or set as its index")
-        return value, False
+        obs = value.obs
+        if isinstance(value, MuData) and obs.index.name is None:
+            if any(mod.obs.index.name == key for mod in value.mod.values()):
+                obs = obs.rename_axis(key)
+        obs = _indexed_by(obs, key, "in obs or set as its index")
+        if obs.index.name == value.obs.index.name and obs.equals(value.obs):
+            return value, False
+        return _detached(value, obs), False
 
     def _match(self, D, S, C, D_is_table: bool, S_is_table: bool) -> None:
+        D = _drop_missing_names(D, "donors", self.donor_id)
         if not D.obs_names.is_unique:
             raise ValueError("Donor identifiers in D must be unique.")
         if S is None:
+            _log_missing_labels(C.obs[self.donor_id], "cells", self.donor_id)
             cell_codes = _utils.codes_for(C.obs[self.donor_id], D.obs_names)
             present = np.bincount(cell_codes[cell_codes >= 0], minlength=D.n_obs) > 0
             if not present.any():
@@ -262,8 +278,11 @@ class DonorData:
                 new_position = np.cumsum(present) - 1
                 cell_codes = np.where(cell_codes >= 0, new_position[np.maximum(cell_codes, 0)], -1)
         else:
+            S = _drop_missing_names(S, "samples", self.sample_id)
             if not S.obs_names.is_unique:
                 raise ValueError("Sample identifiers in S must be unique.")
+            _log_missing_labels(S.obs[self.donor_id], "samples", self.donor_id)
+            _log_missing_labels(C.obs[self.sample_id], "cells", self.sample_id)
             sample_donors = _utils.codes_for(S.obs[self.donor_id], D.obs_names)
             cell_codes = _utils.codes_for(C.obs[self.sample_id], S.obs_names)
             linked = cell_codes >= 0
@@ -295,13 +314,16 @@ class DonorData:
         if order.size != C.n_obs or not np.array_equal(order, np.arange(C.n_obs)):
             C = C[order]
 
-        self._D, self._S, self._C = D, S, C
-        self._D_is_table, self._S_is_table = D_is_table, S_is_table
         if S is not None and self.donor_id in C.obs.columns:
-            expected = D.obs_names[_utils.codes_for(S.obs[self.donor_id], D.obs_names)]
-            stated = pd.Index(_utils.string_labels(C.obs[self.donor_id]), dtype=str)
-            if not np.array_equal(stated.to_numpy(), expected.to_numpy()[self.sample_codes]):
+            sample_donors = D.obs_names[_utils.codes_for(S.obs[self.donor_id], D.obs_names)].to_numpy()
+            expected = sample_donors[_utils.codes_for(C.obs[self.sample_id], S.obs_names)]
+            stated = np.asarray(_utils.string_labels(C.obs[self.donor_id]), dtype=object)
+            known = ~pd.isna(stated)
+            if not np.array_equal(stated[known].astype(str), expected[known].astype(str)):
                 raise ValueError(f"C.obs['{self.donor_id}'] disagrees with the donor of the sample of some cells.")
+
+        self._D, self._S, self._C = _own(D), _own(S), _own(C)
+        self._D_is_table, self._S_is_table = D_is_table, S_is_table
 
     def _raise_empty(self, D, S, C) -> None:
         if D.n_obs == 0 or C.n_obs == 0 or (S is not None and S.n_obs == 0):
@@ -329,7 +351,7 @@ class DonorData:
         new.donor_id = self.donor_id
         new.sample_id = self.sample_id
         new._var_dims_to_sync = list(self._var_dims_to_sync if var_dims_to_sync is None else var_dims_to_sync)
-        new.uns = dict(self.uns)
+        new.uns = _copy.deepcopy(self.uns)
         new._match(D, S, C, self._D_is_table, self._S_is_table)
         return new
 
@@ -374,9 +396,10 @@ class DonorData:
     @D.setter
     def D(self, value: pd.DataFrame | AnnData | MuData) -> None:
         D, is_table = self._prepare_level(value, self.donor_id)
-        if is_table:
-            _carry_over_matrices(self._D, D)
+        previous = self._D
         self._match(D, self._S, self._C, is_table, self._S_is_table)
+        if is_table:
+            _carry_over_matrices(previous, self._D)
 
     @property
     def S(self) -> pd.DataFrame | AnnData | None:
@@ -392,9 +415,10 @@ class DonorData:
         S, is_table = self._prepare_level(value, self.sample_id)
         if self.donor_id not in S.obs.columns:
             raise ValueError(f"'{self.donor_id}' not found in the sample table.")
-        if is_table:
-            _carry_over_matrices(self._S, S)
+        previous = self._S
         self._match(self._D, S, self._C, self._D_is_table, is_table)
+        if is_table:
+            _carry_over_matrices(previous, self._S)
 
     @property
     def C(self) -> AnnData | MuData:
@@ -568,10 +592,13 @@ class DonorData:
                 continue
             kept.append(key)
             frame = D.obsm[key]
-            if isinstance(frame, pd.DataFrame) and not frame.columns.equals(C.var_names):
+            if not isinstance(frame, pd.DataFrame):
+                continue
+            columns = C.var_names[C.var_names.isin(frame.columns)]
+            if not frame.columns.equals(columns):
                 if D.is_view:
                     D = _utils.copy_container(D)
-                D.obsm[key] = D.obsm[key].reindex(columns=C.var_names)
+                D.obsm[key] = D.obsm[key][columns]
         return D, kept
 
     def _subset(
@@ -582,17 +609,20 @@ class DonorData:
             raise IndexError("D is a donor table and has no variables to select.")
         with _keep_categories(not self._D_is_table):
             if not _utils.is_full_slice(D_obs):
-                D = D[D_obs]
+                D = D[_utils.by_label(D_obs, D.obs_names, "donors")]
             if not _utils.is_full_slice(D_var):
-                D = D[:, D_var]
+                D = D[:, _utils.by_label(D_var, D.var_names, "donor variables")]
+            D = D[:] if D is self._D else D
         if not _utils.is_full_slice(S_obs):
             if S is None:
                 raise IndexError("This DonorData has no sample level.")
-            S = S[S_obs]
+            S = S[_utils.by_label(S_obs, S.obs_names, "samples")]
         if not _utils.is_full_slice(C_obs):
-            C = C[C_obs]
+            C = C[_utils.by_label(C_obs, C.obs_names, "cells")]
         if not _utils.is_full_slice(C_var):
-            C = C[:, C_var]
+            C = C[:, _utils.by_label(C_var, C.var_names, "cell variables")]
+        S = S[:] if S is not None and S is self._S else S
+        C = C[:] if C is self._C else C
         D, kept = self._sync_var_dims(D, C)
         return self._derive(D, S, C, kept)
 
@@ -606,6 +636,11 @@ class DonorData:
         S_obs=slice(None),
     ) -> DonorData:
         """Select along the axes of every level by keyword.
+
+        A boolean ``pandas.Series`` is matched to the axis by name, as in ``filter_donors``, ``filter_samples`` and
+        ``filter_cells``, and an entry that is missing (NA) counts as ``False``. A Series with the default index
+        0, 1, 2, ... raises an error, because it cannot be matched by name. Boolean arrays and lists are applied by
+        position, in the order of this object.
 
         Parameters
         ----------
@@ -643,7 +678,7 @@ class DonorData:
             return index_tuple
         if n_ellipsis > 1:
             raise IndexError("DonorData only supports a single ellipsis ('...').")
-        position = index_tuple.index(Ellipsis)
+        position = next(i for i, index in enumerate(index_tuple) if index is Ellipsis)  # ``==`` fails on arrays
         n_full = 4 - (len(index_tuple) - 1)
         return index_tuple[:position] + (slice(None),) * n_full + index_tuple[position + 1 :]
 
@@ -656,6 +691,10 @@ class DonorData:
             A query on the donor table such as ``"age > 60 and sex == 'F'"``, a callable that takes
             the donor table and returns a boolean mask, a boolean mask over donors, or donor
             identifiers.
+            A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
+            ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
+            Names are given as text and must exist. Integers and slices raise an error; select by
+            position with ``dd[...]`` or :meth:`sel`.
         inplace
             Modify this object instead of returning a new one.
 
@@ -676,6 +715,10 @@ class DonorData:
             A query on the sample table, which also sees donor columns, such as
             ``"timepoint == 'day 7' and age > 60"``, a callable that takes this table and returns a
             boolean mask, a boolean mask over samples, or sample identifiers.
+            A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
+            ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
+            Names are given as text and must exist. Integers and slices raise an error; select by
+            position with ``dd[...]`` or :meth:`sel`.
         inplace
             Modify this object instead of returning a new one.
 
@@ -695,6 +738,10 @@ class DonorData:
         key
             A query on ``C.obs`` such as ``"cell_type == 'B cell'"``, a callable that takes ``C.obs``
             and returns a boolean mask, a boolean mask over cells, or cell names.
+            A boolean ``pandas.Series`` is matched by name and its missing entries (NA) count as
+            ``False``, so a unit without an answer is not kept. A boolean array or list is applied by position.
+            Names are given as text and must exist. Integers and slices raise an error; select by
+            position with ``dd[...]`` or :meth:`sel`.
         inplace
             Modify this object instead of returning a new one.
 
@@ -731,7 +778,8 @@ class DonorData:
         groupby
             Column of ``C.obs`` defining cell groups, for example cell types.
         groups
-            Groups that must reach ``min_cells``. Defaults to every group of ``groupby``.
+            Groups that must reach ``min_cells``. Defaults to every group of ``groupby`` except
+            ``"nan"``, the cells whose value is missing.
         level
             ``"donor"`` or ``"sample"``.
         inplace
@@ -746,7 +794,7 @@ class DonorData:
             keep = np.diff(self._offsets(level)) >= min_cells
         else:
             counts = self._group_counts(groupby, level)
-            groups = list(counts.columns) if groups is None else list(groups)
+            groups = [g for g in counts.columns if g != MISSING_GROUP] if groups is None else list(groups)
             missing = [g for g in groups if g not in counts.columns]
             if missing:
                 raise KeyError(f"Groups {missing} not found in C.obs['{groupby}'].")
@@ -776,7 +824,8 @@ class DonorData:
         fraction
             Fraction of cells to keep per unit instead of a fixed number. At least one cell is kept.
         groupby
-            Column of ``C.obs`` to stratify by within units, for example cell types.
+            Column of ``C.obs`` to stratify by within units, for example cell types. Cells whose value is
+            missing, or a string such as ``"nan"`` or ``"NA"``, form a group of their own.
         level
             ``"donor"`` or ``"sample"``.
         random_state
@@ -793,7 +842,7 @@ class DonorData:
             raise ValueError("Provide exactly one of n or fraction.")
         strata = self._codes(level)
         if groupby is not None:
-            group_codes, groups = pd.factorize(self._C.obs[groupby], use_na_sentinel=False)
+            group_codes, groups = pd.factorize(_utils.missing_as_na(self._C.obs[groupby]), use_na_sentinel=False)
             strata = strata * len(groups) + group_codes
         strata_codes, strata = pd.factorize(strata)
         sizes = np.bincount(strata_codes)
@@ -869,11 +918,8 @@ class DonorData:
             labels = membership.columns if isinstance(membership, pd.DataFrame) else pd.RangeIndex(membership.shape[1])
             counts = _utils.group_sum(membership, codes, len(names))
             return pd.DataFrame(counts, index=names, columns=pd.Index(labels.astype(str), name=groupby))
-        groups = self._C.obs[groupby]
-        categories = _observed_categories(groups)
-        group_codes = pd.Categorical(groups, categories=categories).codes
-        member = group_codes >= 0
-        flat = codes[member] * len(categories) + group_codes[member]
+        group_codes, categories = _group_codes(self._C.obs[groupby])
+        flat = codes * len(categories) + group_codes
         counts = np.bincount(flat, minlength=len(names) * len(categories)).reshape(len(names), len(categories))
         return pd.DataFrame(counts, index=names, columns=pd.Index(categories, name=groupby))
 
@@ -895,6 +941,8 @@ class DonorData:
             Column of ``C.obs`` with cell groups, for example cell types, or a key of ``C.obsm`` with
             a cells by groups membership matrix. A membership matrix allows overlapping groups, such
             as the neighbourhoods of Milo, and yields the units by neighbourhoods count matrix.
+            Cells whose value in the column is missing, or a string such as ``"nan"`` or ``"NA"``, form
+            the group ``"nan"``.
         normalize
             Return fractions that sum to one per unit instead of counts.
         clr
@@ -1369,6 +1417,8 @@ class DonorData:
             Layer of ``C`` to aggregate, ``X`` by default. Raw counts suit differential testing.
         groupby
             Column of ``C.obs``, for example cell types, giving one profile per unit and group.
+            Cells whose value is missing, or a string such as ``"nan"`` or ``"NA"``, form the group
+            ``"nan"``.
         func
             Aggregation, see :meth:`aggregate`.
         min_cells
@@ -1397,9 +1447,8 @@ class DonorData:
             groups = self._C.obs[groupby]
             if rows is not None:
                 groups = groups.iloc[rows]
-            categories = _observed_categories(groups)
-            group_codes = pd.Categorical(groups, categories=categories).codes
-            codes = np.where(group_codes >= 0, unit_codes * len(categories) + group_codes, -1)
+            group_codes, categories = _group_codes(groups)
+            codes = unit_codes * len(categories) + group_codes
             n_groups = len(names) * len(categories)
 
         counts = np.bincount(codes[codes >= 0], minlength=n_groups)
@@ -1452,7 +1501,8 @@ class DonorData:
         Parameters
         ----------
         by
-            Donor table column naming the new unit of every donor.
+            Donor table column naming the new unit of every donor. Donors whose value is missing, or a string
+            such as ``"nan"`` or ``"NA"``, are dropped with a warning, as for donor and sample identifiers.
         func
             Aggregation for donor table columns that vary within a unit, either one pandas
             aggregation for all numeric columns or a dict per column. Without it such columns are
@@ -1468,6 +1518,7 @@ class DonorData:
         DonorData
             With a donor table indexed by the values of ``by``.
         """
+        self = self._with_units(by)
         unit_codes, table = self._units_of(by, func=func, count_key=count_key)
         obsm = {}
         if obsm_func is not None:
@@ -1478,11 +1529,13 @@ class DonorData:
                 obsm[key] = values
 
         cell_units = pd.Categorical(table.index[unit_codes[self.donor_codes]], categories=table.index)
-        cells = _utils.shallow_with_obs(self._C, self._C.obs.assign(**{by: cell_units}))
+        cells = _utils.shallow_with_obs(self._C, self._C.obs.assign(**{by: cell_units}))[:]
         synced = [k for k in self._var_dims_to_sync if k in obsm]
         if self._S is None:
-            return DonorData(D=table, C=cells, donor_id=by, obsm=obsm, uns=dict(self.uns), var_dims_to_sync=synced)
-        samples = self._S.copy()
+            return DonorData(
+                D=table, C=cells, donor_id=by, obsm=obsm, uns=_copy.deepcopy(self.uns), var_dims_to_sync=synced
+            )
+        samples = _utils.copy_container(self._S)
         samples.obs[by] = np.asarray(table.index[unit_codes[self.sample_donor_codes]], dtype=str)
         new = DonorData(
             D=table,
@@ -1491,19 +1544,25 @@ class DonorData:
             donor_id=by,
             sample_id=self.sample_id,
             obsm=obsm,
-            uns=dict(self.uns),
+            uns=_copy.deepcopy(self.uns),
             var_dims_to_sync=synced,
         )
         if self._S_is_table:
             _copy_matrices(samples, new._S)
         return new
 
+    def _with_units(self, by: str) -> DonorData:
+        """Drop the donors whose ``by`` is missing, as the constructor does for donor and sample identifiers."""
+        if by not in self.obs.columns:
+            raise KeyError(f"'{by}' not found in the donor table.")
+        _log_missing_labels(self.obs[by], "donors", by)
+        missing = _utils.is_missing_label(self.obs[by])
+        return self.filter_donors(~missing) if missing.any() else self
+
     def _units_of(self, by: str, *, func=None, count_key: str | None = None) -> tuple[np.ndarray, pd.DataFrame]:
         if by not in self.obs.columns:
             raise KeyError(f"'{by}' not found in the donor table.")
         units = self.obs[by]
-        if units.isna().any():
-            raise ValueError(f"'{by}' has missing values, every donor needs a unit.")
         unit_codes, unit_names = pd.factorize(pd.Series(_utils.string_labels(units)), sort=True)
         unit_names = pd.Index(np.asarray(unit_names, dtype=str), name=by)
         first = _utils.first_positions(unit_codes, len(unit_names))
@@ -1534,7 +1593,8 @@ class DonorData:
         Parameters
         ----------
         by
-            Donor table column naming the new donor of every current donor.
+            Donor table column naming the new donor of every current donor. Donors whose value is missing, or a string
+            such as ``"nan"`` or ``"NA"``, are dropped with a warning, as for donor and sample identifiers.
         keep_in_samples
             Keep the moved columns in the sample table as well.
 
@@ -1546,6 +1606,7 @@ class DonorData:
         """
         if self._S is not None:
             raise ValueError("This DonorData already has a sample level.")
+        self = self._with_units(by)
         unit_codes, table = self._units_of(by)
         table = table.drop(columns=[f"n_{self.donor_id}"])
         samples = _utils.copy_container(self._D)
@@ -1553,7 +1614,9 @@ class DonorData:
         if not keep_in_samples:
             samples.obs = samples.obs.drop(columns=[c for c in table.columns if c in samples.obs.columns])
         sample_side = samples.obs if self._D_is_table else samples
-        new = DonorData(D=table, S=sample_side, C=self._C, donor_id=by, sample_id=self.donor_id, uns=dict(self.uns))
+        new = DonorData(
+            D=table, S=sample_side, C=self._C[:], donor_id=by, sample_id=self.donor_id, uns=_copy.deepcopy(self.uns)
+        )
         if self._D_is_table:
             _copy_matrices(samples, new._S)
         return new
@@ -1572,7 +1635,7 @@ class DonorData:
         if self._S is None:
             raise ValueError("This DonorData has no sample level.")
         codes = self.sample_donor_codes
-        samples = self._S.copy()
+        samples = _utils.copy_container(self._S)
         extra = [c for c in self._D.obs.columns if c not in samples.obs.columns]
         if extra:
             donor_columns = _utils.broadcast(self._D.obs[extra], codes, samples.obs_names)
@@ -1585,24 +1648,41 @@ class DonorData:
             else:
                 samples.obsm[key] = matrix[codes]
         side = samples.obs if self._S_is_table else samples
-        new = DonorData(D=side, C=self._C, donor_id=self.sample_id, uns=dict(self.uns))
+        new = DonorData(D=side, C=self._C[:], donor_id=self.sample_id, uns=_copy.deepcopy(self.uns))
         if self._S_is_table:
             _copy_matrices(samples, new._D)
         return new
 
-    def _strata(self, stratify) -> np.ndarray:
-        if stratify is None:
-            return np.zeros(self.n_donors, dtype=np.int64)
-        values = self.obs[stratify] if isinstance(stratify, str) else pd.Series(np.asarray(stratify))
-        if len(values) != self.n_donors:
-            raise ValueError("stratify must have one value per donor.")
-        return pd.factorize(values, use_na_sentinel=False)[0]
+    def _split_values(self, stratify, groups) -> tuple[pd.Series | None, pd.Series | None]:
+        """``stratify`` and ``groups`` as one value per donor, with every missing value as NaN."""
+        if isinstance(stratify, str):
+            stratify = self.obs[stratify]
+        elif isinstance(stratify, pd.Series):
+            stratify = _utils.align_series(stratify, self.obs_names, "donors", "stratify")
+        elif stratify is not None:
+            if len(stratify) != self.n_donors:
+                raise ValueError("stratify must have one value per donor.")
+            stratify = pd.Series(np.asarray(stratify), index=self.obs_names)
+        if groups is not None:
+            if groups not in self.obs.columns:
+                raise KeyError(f"'{groups}' not found in the donor table.")
+            groups = self.obs[groups]
+        return (
+            None if stratify is None else _utils.missing_as_na(stratify),
+            None if groups is None else _utils.missing_as_na(groups),
+        )
 
     def _split_units(self, stratify, groups) -> tuple[np.ndarray, np.ndarray]:
-        strata = self._strata(stratify)
+        stratify, groups = self._split_values(stratify, groups)
+        if stratify is None:
+            strata = np.zeros(self.n_donors, dtype=np.int64)
+        else:
+            strata = pd.factorize(stratify, use_na_sentinel=False)[0]
         if groups is None:
             return np.arange(self.n_donors), strata
-        group_codes = pd.factorize(self.obs[groups], use_na_sentinel=False)[0]
+        group_codes = pd.factorize(groups)[0]
+        alone = group_codes < 0
+        group_codes[alone] = group_codes.max() + 1 + np.arange(alone.sum())
         group_strata = np.array([np.bincount(strata[group_codes == g]).argmax() for g in range(group_codes.max() + 1)])
         return group_codes, group_strata
 
@@ -1626,10 +1706,13 @@ class DonorData:
             Fraction of donors, or of groups with ``groups``, held out for testing, or their number
             when an integer.
         stratify
-            Donor table column, or one value per donor, whose proportions are kept in both sets. With
-            ``groups`` each group counts with its most frequent value.
+            Donor table column, or one value per donor, whose proportions are kept in both sets. A
+            ``pandas.Series`` is matched to the donors by name, an array or list by position. With
+            ``groups`` each group counts with its most frequent value. Donors whose value is missing, or
+            a string such as ``"nan"`` or ``"NA"``, form a stratum of their own.
         groups
-            Donor table column whose groups are never split.
+            Donor table column whose groups are never split. A donor whose group is missing is a group
+            of its own.
         random_state
             Seed of the random generator.
 
@@ -1672,9 +1755,12 @@ class DonorData:
         n_splits
             Number of folds. Every donor is in the test set of exactly one fold.
         stratify
-            Donor table column, or one value per donor, balanced across folds.
+            Donor table column, or one value per donor, balanced across folds. A ``pandas.Series`` is
+            matched to the donors by name, an array or list by position. Donors whose value is
+            missing, or a string such as ``"nan"`` or ``"NA"``, form a stratum of their own.
         groups
             Donor table column whose groups, such as sites or studies, are never split across folds.
+            A donor whose group is missing is a group of its own.
         random_state
             Seed of the random generator.
 
@@ -1774,6 +1860,70 @@ class DonorData:
             f"(n_D_obs={n_donors:,}, n_D_vars={n_donor_vars:,}, {samples}"
             f"n_C_obs={n_cells:,}, n_C_vars={n_cell_vars:,})"
         )
+
+
+_VIEW_X_WRITES_THROUGH = tuple(int(part) for part in version("anndata").split(".")[:2]) < (0, 13)
+
+
+def _writes_through(level: AnnData | MuData) -> bool:
+    """Whether assigning ``X`` of ``level`` would write into the in-memory matrix of the object it views."""
+    if not (_VIEW_X_WRITES_THROUGH and level.is_view):
+        return False
+    if isinstance(level, MuData):
+        return any(_writes_through(mod) for mod in level.mod.values())
+    return isinstance(level._adata_ref.X, np.ndarray | sp.spmatrix | sp.sparray)
+
+
+def _own(level: AnnData | MuData | None) -> AnnData | MuData | None:
+    """``level``, or a copy of it if assigning its ``X`` would write into another object."""
+    if level is not None and _writes_through(level):
+        return _utils.copy_container(level)
+    return level
+
+
+def _indexed_by(obs: pd.DataFrame, key: str, where: str) -> pd.DataFrame:
+    """A copy of ``obs`` indexed by the identifiers as text, with a ``key`` column of the same text if it has one."""
+    if key in obs.columns and obs.index.name != key:
+        obs = obs.set_index(key, drop=False)
+    elif obs.index.name is None:
+        obs = obs.rename_axis(key)
+    elif obs.index.name != key:
+        raise ValueError(f"'{key}' must be {where}")
+    obs = obs.copy()
+    obs.index = pd.Index(np.asarray(_utils.as_text(obs.index.to_series()), dtype=object), name=key)
+    if key in obs.columns:
+        obs[key] = np.asarray(obs.index, dtype=object)
+    return obs
+
+
+def _detached(level: AnnData | MuData, obs: pd.DataFrame | None = None) -> AnnData | MuData:
+    """A new object with the data of ``level`` and ``obs``, so that changes to it never reach ``level``."""
+    obs = level.obs.copy() if obs is None else obs
+    if type(level) is AnnData:
+        return _utils.shallow_with_obs(level, obs)
+    new = _utils.copy_container(level)
+    new.obs = obs
+    return new
+
+
+def _drop_missing_names(level: AnnData | MuData, units: str, key: str) -> AnnData | MuData:
+    """``level`` without the rows whose name is missing or a string such as ``"nan"``, with a warning."""
+    names = level.obs_names.to_series()
+    _log_missing_labels(names, units, key)
+    missing = _utils.is_missing_label(names)
+    return level[~missing] if missing.any() else level
+
+
+def _group_codes(groups: pd.Series) -> tuple[np.ndarray, pd.Index]:
+    """Code of the group of every cell and the group names. Cells with a missing group form the group ``"nan"``."""
+    missing = _utils.is_missing_label(groups)
+    groups = groups.where(~missing)
+    categories = _observed_categories(groups)
+    codes = pd.Categorical(groups, categories=categories).codes.astype(np.int64)
+    if missing.any():
+        codes[missing] = len(categories)
+        categories = categories.astype(str).append(pd.Index([MISSING_GROUP]))
+    return codes, categories
 
 
 def _observed_categories(groups: pd.Series) -> pd.Index:

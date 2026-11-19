@@ -60,17 +60,50 @@ def copy_container(container: AnnData | MuData) -> AnnData | MuData:
     return container.copy()
 
 
+# Identifiers that mean "missing", compared case-insensitively: the strings pandas reads as missing.
+MISSING_LABELS = {"", "na", "n/a", "<na>", "nan", "nat", "none", "null"}
+
+
+def is_missing_label(values: pd.Series) -> np.ndarray:
+    """Whether each identifier is missing, or a string that stands for a missing value such as ``"nan"``.
+
+    The single definition of a missing identifier: everything that turns a column into donor or sample
+    identifiers goes through :func:`string_labels`, which uses it.
+    """
+    distinct = values.cat.categories if isinstance(values.dtype, pd.CategoricalDtype) else pd.unique(values)
+    missing_text = [label for label in distinct if str(label).strip().lower() in MISSING_LABELS]
+    return (values.isna() | values.isin(missing_text)).to_numpy()
+
+
+def missing_as_na(values: pd.Series) -> pd.Series:
+    """``values`` with every missing value, and every string such as ``"nan"`` that stands for one, as NaN."""
+    return values.where(~is_missing_label(values))
+
+
+def as_text(values: pd.Series | pd.Index):
+    """``values`` as text, writing whole numbers stored as floats without a decimal point."""
+    if pd.api.types.is_float_dtype(values.dtype):
+        present = np.asarray(values[pd.notna(values)], dtype=float)
+        if np.all(np.isfinite(present) & (present == np.round(present))):
+            values = values.astype("Int64")
+    return values.astype(str)
+
+
 def string_labels(values: pd.Series) -> pd.Categorical | np.ndarray:
-    """Return identifiers as strings, keeping a categorical encoding when the input has one."""
+    """Return identifiers as strings, with missing ones as NaN, keeping a categorical encoding if the input has one."""
+    missing = is_missing_label(values)
     if isinstance(values.dtype, pd.CategoricalDtype):
-        return values.cat.rename_categories(values.cat.categories.astype(str)).array
-    return values.astype(str).to_numpy()
+        labels = values.cat.rename_categories(as_text(values.cat.categories))
+        return labels.where(~missing).array
+    return as_text(values).where(~missing).to_numpy()
 
 
 def codes_for(values: pd.Series, categories: pd.Index) -> np.ndarray:
     """Position of every value in ``categories``, or ``-1`` when it is not one of them."""
     labels = np.asarray(string_labels(values), dtype=object)
-    return np.asarray(pd.Index(categories).get_indexer(labels), dtype=np.int64)
+    codes = np.asarray(pd.Index(categories).get_indexer(labels), dtype=np.int64)
+    codes[pd.isna(labels)] = -1
+    return codes
 
 
 def first_positions(codes: np.ndarray, n_groups: int) -> np.ndarray:
@@ -97,37 +130,79 @@ def constant_columns(obs: pd.DataFrame, codes: np.ndarray, first: np.ndarray, ex
     return [c for c in obs.columns if c not in exclude and is_constant_within(obs[c], codes, first)]
 
 
-def _align_bool_series(mask: pd.Series, index: pd.Index, what: str) -> pd.Series:
-    """Align a boolean Series to ``index`` by label, since the levels may be reordered on construction."""
-    if mask.index.equals(index):
-        return mask
-    labels = mask.index.astype(str)
+def align_series(values: pd.Series, index: pd.Index, what: str, subject: str) -> pd.Series:
+    """Reorder a Series to ``index`` by label, since the levels may be reordered on construction.
+
+    The single rule for every Series that holds one value per donor, sample or cell: it is matched by name.
+    Labels beyond ``index`` are ignored. ``subject`` names the Series in the error messages.
+    """
+    advice = (
+        "Build it from the current object. Passing its ``.values`` selects by position instead: "
+        "do that only if they are in the order of this object, which can differ from the order of your "
+        "input because DonorData reorders samples and cells."
+    )
+    if isinstance(values.index, pd.RangeIndex):
+        # Also when the names are "0", "1", ...: the values may be in the order of the input or of this object.
+        raise ValueError(
+            f"{subject} has the default index 0, 1, 2, ... instead of the names of the {what}, "
+            f"so it cannot be matched by name. {advice}"
+        )
+    if values.index.equals(index):
+        return values
+    labels = values.index.astype(str)
     if not labels.is_unique:
-        raise ValueError(f"Boolean mask over {what} has duplicate labels and cannot be aligned by index.")
+        raise ValueError(f"{subject} has duplicate labels, so it cannot be matched by name.")
     missing = index.difference(labels)
     if len(missing):
         raise ValueError(
-            f"Boolean mask over {what} is missing {len(missing)} of {len(index)} labels, "
-            f"for example {list(missing[:3])}. Build the mask from the current object or pass a numpy array."
+            f"{subject} is missing {len(missing)} of {len(index)} labels, for example "
+            f"{list(missing[:3])}, so it cannot be matched by name. {advice}"
         )
-    return pd.Series(mask.array, index=labels).reindex(index)
+    return pd.Series(values.array, index=labels).reindex(index)
+
+
+def by_label(key, index: pd.Index, what: str):
+    """Align a boolean Series to ``index`` by label, see :func:`align_series`.
+
+    A missing entry (NA) counts as ``False``. Any other selection is returned unchanged.
+    """
+    if not (isinstance(key, pd.Series) and pd.api.types.is_bool_dtype(key.dtype)):
+        return key
+    return align_series(key, index, what, f"Boolean mask over {what}").to_numpy(dtype=bool, na_value=False)
 
 
 def resolve_mask(key, frame: pd.DataFrame, what: str) -> np.ndarray:
-    """Turn a selection given as query, callable, labels or boolean mask into a boolean mask over rows."""
+    """Turn a selection given as query, callable, names or boolean mask into a boolean mask over rows.
+
+    Names must exist. Integers and slices are rejected, since they would select by position.
+    """
+    if isinstance(key, set | frozenset):
+        key = list(key)
     if isinstance(key, str):
         result = frame.eval(key)
     elif callable(key):
         result = key(frame)
     else:
         result = key
-    if isinstance(result, pd.Series) and pd.api.types.is_bool_dtype(result.dtype):
-        result = _align_bool_series(result, frame.index, what).to_numpy(dtype=bool, na_value=False)
-    array = np.asarray(result)
+    by_position = "To select by position use ``dd[...]`` or ``dd.sel(...)``."
+    if isinstance(result, slice):
+        raise TypeError(f"Cannot select {what} with a slice. {by_position}")
+    if pd.api.types.infer_dtype(result if np.ndim(result) else [result], skipna=False) in ("integer", "mixed-integer"):
+        raise TypeError(
+            f"Cannot select {what} with integers. Names are stored as text, so pass them as strings, "
+            f"for example ['101', '102']. {by_position}"
+        )
+    array = np.asarray(by_label(result, frame.index, what))
     if array.dtype != bool:
         if array.ndim != 1:
             raise ValueError(f"Cannot select {what} with an array of shape {array.shape}.")
-        return frame.index.isin(pd.Index(array).astype(str))
+        names = pd.Index(array).astype(str)
+        unknown = names.difference(frame.index)
+        if len(unknown):
+            raise KeyError(
+                f"{len(unknown)} of the {len(names)} given names are not {what}, for example {list(unknown[:3])}."
+            )
+        return frame.index.isin(names)
     if array.shape != (len(frame),):
         raise ValueError(f"Boolean mask over {what} has length {array.size}, expected {len(frame)}.")
     return array
@@ -296,8 +371,11 @@ def modality(C: AnnData | MuData, mod: str | None) -> tuple[AnnData, np.ndarray 
         return C, None
     if mod is None:
         raise ValueError(f"C is a MuData, pass mod= to choose one of {list(C.mod)}.")
-    positions = np.asarray(C.obsmap[mod]).ravel().astype(np.int64) - 1
     adata = C.mod[mod]
+    if adata.obs_names.is_unique and C.obs_names.is_unique:
+        positions = adata.obs_names.get_indexer(C.obs_names)
+    else:
+        positions = np.asarray(C.obsmap[mod]).ravel().astype(np.int64) - 1
     present = positions >= 0
     if present.all():
         if positions.size == adata.n_obs and np.array_equal(positions, np.arange(adata.n_obs)):
