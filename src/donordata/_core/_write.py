@@ -224,6 +224,9 @@ def storage_paths(container) -> set[Path]:
     for matrix in matrices_of(container):
         if isinstance(matrix, CSRDataset | CSCDataset):
             paths.add(_path_of(matrix.group))
+        elif isinstance(matrix, zarr.Array | h5py.Dataset):
+            # e.g. a genotype matrix that a reader backs with the array on disk itself
+            paths.add(_path_of(matrix))
         elif isinstance(matrix, da.Array):
             for value in matrix.__dask_graph__().values():
                 value = getattr(value, "value", value)
@@ -233,8 +236,9 @@ def storage_paths(container) -> set[Path]:
 
 
 def reads_from(container, path) -> bool:
-    """Whether the matrices of ``container`` still read from the file or store at ``path``."""
-    return Path(path).resolve() in storage_paths(container)
+    """Whether the matrices of ``container`` still read from the file or store at ``path``, or from inside it."""
+    target = Path(path).resolve()
+    return any(p == target or target in p.parents for p in storage_paths(container))
 
 
 def _path_of(element) -> Path | None:

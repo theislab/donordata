@@ -336,6 +336,23 @@ def test_writing_into_the_file_a_lazy_object_reads_from_raises(tmp_path, sparse_
     _matrices_equal(read_dd(path, lazy=False).C.X, X)
 
 
+def test_writing_into_the_store_a_zarr_backed_matrix_reads_from_raises(tmp_path):
+    import zarr
+
+    X = np.arange(1, 13, dtype=np.float32).reshape(6, 2)
+    path = tmp_path / "cohort.dd.zarr"
+    _small_dd(X).write_dd(path)
+    lazy = read_dd(path, lazy=True)
+    # readers such as cellink back X with the zarr.Array itself instead of a dask array
+    lazy.C.X = zarr.open_group(str(path), mode="r")["C"]["X"]
+    with pytest.raises(ValueError, match="reads its matrices from"):
+        lazy.write_dd(path)
+    lazy.C.X = zarr.open_array(str(path / "C" / "X"), mode="r")
+    with pytest.raises(ValueError, match="reads its matrices from"):
+        lazy.write_dd(path)
+    _matrices_equal(read_dd(path, lazy=False).C.X, X)
+
+
 @pytest.mark.parametrize("extension", [".dd.h5", ".dd.zarr"])
 def test_nullable_columns_of_donor_matrices_keep_their_type(tmp_path, extension):
     dd = _small_dd()

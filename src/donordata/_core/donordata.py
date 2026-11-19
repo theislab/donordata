@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import copy as _copy
 import logging
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Literal
 
+import anndata as ad
 import h5py
 import numpy as np
 import pandas as pd
@@ -23,6 +25,18 @@ logger = logging.getLogger(__name__)
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
 _RANK = {"donor": 0, "sample": 1, "cell": 2}
+
+
+def _keep_categories(keep: bool = True):
+    """Context in which views of a donor-level AnnData keep all categories of ``obs`` and ``var``.
+
+    Without it anndata drops unused categories of every categorical column whenever a view is
+    created, also of ``var`` when only donors are selected, which for genotypes (alleles of millions
+    of variants) costs more than reading the selected genotypes.
+    """
+    if keep and hasattr(ad.settings, "override") and hasattr(ad.settings, "remove_unused_categories"):
+        return ad.settings.override(remove_unused_categories=False)
+    return contextlib.nullcontext()
 
 
 class DonorData:
@@ -243,7 +257,8 @@ class DonorData:
             if not present.any():
                 self._raise_empty(D, None, C)
             if not present.all():
-                D = D[present]
+                with _keep_categories(not D_is_table):
+                    D = D[present]
                 new_position = np.cumsum(present) - 1
                 cell_codes = np.where(cell_codes >= 0, new_position[np.maximum(cell_codes, 0)], -1)
         else:
@@ -259,7 +274,8 @@ class DonorData:
             if not donor_present.any():
                 self._raise_empty(D, S, C)
             if not donor_present.all():
-                D = D[donor_present]
+                with _keep_categories(not D_is_table):
+                    D = D[donor_present]
                 new_position = np.cumsum(donor_present) - 1
                 sample_donors = np.where(sample_donors >= 0, new_position[np.maximum(sample_donors, 0)], -1)
             samples = np.flatnonzero(sample_present)
@@ -562,12 +578,13 @@ class DonorData:
         self, D_obs=slice(None), D_var=slice(None), C_obs=slice(None), C_var=slice(None), S_obs=slice(None)
     ) -> DonorData:
         D, S, C = self._D, self._S, self._C
-        if not _utils.is_full_slice(D_obs):
-            D = D[D_obs]
-        if not _utils.is_full_slice(D_var):
-            if self._D_is_table:
-                raise IndexError("D is a donor table and has no variables to select.")
-            D = D[:, D_var]
+        if not _utils.is_full_slice(D_var) and self._D_is_table:
+            raise IndexError("D is a donor table and has no variables to select.")
+        with _keep_categories(not self._D_is_table):
+            if not _utils.is_full_slice(D_obs):
+                D = D[D_obs]
+            if not _utils.is_full_slice(D_var):
+                D = D[:, D_var]
         if not _utils.is_full_slice(S_obs):
             if S is None:
                 raise IndexError("This DonorData has no sample level.")
