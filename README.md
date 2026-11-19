@@ -1,7 +1,7 @@
 <!-- logo-image-start -->
 
 <p align="center">
-  <img src="docs/_static/img/donordata_logo.svg" alt="DonorData" width="360">
+  <img src="https://raw.githubusercontent.com/theislab/donordata/main/docs/_static/img/donordata_logo.svg" alt="DonorData" width="360">
 </p>
 
 <br>
@@ -12,14 +12,15 @@
 [![License](https://img.shields.io/github/license/theislab/donordata)](https://opensource.org/licenses/Apache-2.0)
 [![Read the Docs](https://img.shields.io/readthedocs/donordata/latest.svg?label=Read%20the%20Docs)](https://donordata.readthedocs.io/)
 [![Test](https://github.com/theislab/donordata/actions/workflows/test.yaml/badge.svg)](https://github.com/theislab/donordata/actions/workflows/test.yaml)
+[![PyPI](https://img.shields.io/pypi/v/donordata.svg)](https://pypi.org/project/donordata)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 
 # DonorData: single-cell data across donors, samples and cells
 
-[Installation](docs/install.md) | [API](docs/api.md) | [Specification](docs/io/spec.md) | [Design](https://github.com/theislab/donordata/blob/main/DESIGN.md) |
-[Changelog](docs/changelog.md)
+[Installation](https://donordata.readthedocs.io/en/latest/install.html) | [API](https://donordata.readthedocs.io/en/latest/api.html) | [Specification](https://donordata.readthedocs.io/en/latest/io/spec.html) | [Design](https://github.com/theislab/donordata/blob/main/DESIGN.md) |
+[Changelog](https://donordata.readthedocs.io/en/latest/changelog.html)
 
-![DonorData overview](docs/_static/img/donordata_overview.png)
+![DonorData overview](https://raw.githubusercontent.com/theislab/donordata/main/docs/_static/img/donordata_overview.png)
 
 ## Data structure
 
@@ -94,16 +95,16 @@ dd = donordata.io.read_dd("cohort.dd.zarr")
 ## Installation
 
 ```console
-pip install git+https://github.com/theislab/donordata
+pip install donordata
 ```
 
-See the [installation guide](docs/install.md) for optional dependencies.
+See the [installation guide](https://donordata.readthedocs.io/en/latest/install.html) for optional dependencies.
 
 ## Tutorials
 
-The tutorials cover a [first object](docs/tutorials/getting_started.ipynb), a
-[patient cohort](docs/tutorials/patient_cohort.ipynb), a [CRISPR screen](docs/tutorials/perturbation_screen.ipynb)
-and [electronic health records](docs/tutorials/ehr_cohort.ipynb).
+The tutorials cover a [first object](https://donordata.readthedocs.io/en/latest/tutorials/getting_started.html), a
+[patient cohort](https://donordata.readthedocs.io/en/latest/tutorials/patient_cohort.html), a [CRISPR screen](https://donordata.readthedocs.io/en/latest/tutorials/perturbation_screen.html)
+and [electronic health records](https://donordata.readthedocs.io/en/latest/tutorials/ehr_cohort.html).
 
 ## Packages using DonorData
 

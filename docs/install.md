@@ -5,9 +5,17 @@
 :depth: 3
 ```
 
+## PyPI
+
+DonorData needs Python 3.12 or newer. Install it from [PyPI](https://pypi.org/project/donordata/):
+
+```console
+pip install donordata
+```
+
 ## Development version
 
-DonorData is not on PyPI yet. Install it from [the GitHub repository](https://github.com/theislab/donordata):
+The latest version on [GitHub](https://github.com/theislab/donordata) is installed with:
 
 ```console
 pip install git+https://github.com/theislab/donordata
@@ -18,14 +26,14 @@ pip install git+https://github.com/theislab/donordata
 The PyTorch dataset in {mod}`donordata.ml` needs the `ml` extra:
 
 ```console
-pip install "donordata[ml] @ git+https://github.com/theislab/donordata"
+pip install "donordata[ml]"
 ```
 
 Donor or sample levels stored as an EHRData need [ehrdata](https://ehrdata.readthedocs.io) 0.6 or later, which is
 installed with the `ehr` extra:
 
 ```console
-pip install "donordata[ehr] @ git+https://github.com/theislab/donordata"
+pip install "donordata[ehr]"
 ```
 
 ## Troubleshooting
