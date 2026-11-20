@@ -113,6 +113,6 @@ them, from eQTL mapping and rare variant tests to colocalization and LD score re
 [patpy](https://github.com/lueckenlab/patpy) computes representations of donors or samples from their cells and
 compares them across a cohort.
 
-## Citation
+## Citation 
 
 If you use DonorData, please cite it as described in [CITATION.cff](https://github.com/theislab/donordata/blob/main/CITATION.cff).
