@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import contextlib
 import copy as _copy
 import logging
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from importlib.metadata import version
 from typing import Literal
 
+import anndata as ad
 import h5py
 import numpy as np
 import pandas as pd
-import scipy.sparse as sp
 import zarr
 from anndata import AnnData
 from mudata import MuData
@@ -23,9 +23,9 @@ from donordata._core.fields import DAnn
 logger = logging.getLogger(__name__)
 
 
-def _log_missing_labels(labels: pd.Series, units: str, key: str, shown: int = 10) -> None:
+def _log_missing_labels(labels: pd.Series, units: str, key: str, shown: int = 10, missing=None) -> None:
     """Warn which units are dropped because their ``key`` is missing or a string such as ``"nan"``."""
-    dropped = labels[_utils.is_missing_label(labels)]
+    dropped = labels[_utils.is_missing_label(labels) if missing is None else missing]
     if dropped.empty:
         return
     names = ", ".join(
@@ -44,6 +44,16 @@ MISSING_GROUP = "nan"
 Selection = str | Callable | Sequence | np.ndarray | pd.Series | pd.Index
 Level = Literal["donor", "sample", "cell"]
 _RANK = {"donor": 0, "sample": 1, "cell": 2}
+
+
+def _keep_categories(keep: bool = True):
+    """Context in which views of a donor-level AnnData keep all categories of ``obs`` and ``var``.
+
+    Without it anndata drops unused categories of every categorical column whenever a view is
+    created, also of ``var`` when only donors are selected, which for genotypes (alleles of millions
+    of variants) costs more than reading the selected genotypes.
+    """
+    return ad.settings.override(remove_unused_categories=False) if keep else contextlib.nullcontext()
 
 
 class DonorData:
@@ -248,28 +258,29 @@ class DonorData:
             return value, False
         return _detached(value, obs), False
 
-    def _match(self, D, S, C, D_is_table: bool, S_is_table: bool) -> None:
-        D = _drop_missing_names(D, "donors", self.donor_id)
+    def _match(self, D, S, C, D_is_table: bool, S_is_table: bool, checked: bool = False) -> None:
+        if not checked:
+            with _keep_categories(not D_is_table):
+                D = _drop_missing_names(D, "donors", self.donor_id)
         if not D.obs_names.is_unique:
             raise ValueError("Donor identifiers in D must be unique.")
         if S is None:
-            _log_missing_labels(C.obs[self.donor_id], "cells", self.donor_id)
-            cell_codes = _utils.codes_for(C.obs[self.donor_id], D.obs_names)
+            cell_codes = _match_codes(C.obs[self.donor_id], D.obs_names, "cells", self.donor_id, checked)
             present = np.bincount(cell_codes[cell_codes >= 0], minlength=D.n_obs) > 0
             if not present.any():
                 self._raise_empty(D, None, C)
             if not present.all():
-                D = D[present]
+                with _keep_categories(not D_is_table):
+                    D = D[present]
                 new_position = np.cumsum(present) - 1
                 cell_codes = np.where(cell_codes >= 0, new_position[np.maximum(cell_codes, 0)], -1)
         else:
-            S = _drop_missing_names(S, "samples", self.sample_id)
+            if not checked:
+                S = _drop_missing_names(S, "samples", self.sample_id)
             if not S.obs_names.is_unique:
                 raise ValueError("Sample identifiers in S must be unique.")
-            _log_missing_labels(S.obs[self.donor_id], "samples", self.donor_id)
-            _log_missing_labels(C.obs[self.sample_id], "cells", self.sample_id)
-            sample_donors = _utils.codes_for(S.obs[self.donor_id], D.obs_names)
-            cell_codes = _utils.codes_for(C.obs[self.sample_id], S.obs_names)
+            sample_donors = _match_codes(S.obs[self.donor_id], D.obs_names, "samples", self.donor_id, checked)
+            cell_codes = _match_codes(C.obs[self.sample_id], S.obs_names, "cells", self.sample_id, checked)
             linked = cell_codes >= 0
             linked[linked] = sample_donors[cell_codes[linked]] >= 0
             cell_codes = np.where(linked, cell_codes, -1)
@@ -278,7 +289,8 @@ class DonorData:
             if not donor_present.any():
                 self._raise_empty(D, S, C)
             if not donor_present.all():
-                D = D[donor_present]
+                with _keep_categories(not D_is_table):
+                    D = D[donor_present]
                 new_position = np.cumsum(donor_present) - 1
                 sample_donors = np.where(sample_donors >= 0, new_position[np.maximum(sample_donors, 0)], -1)
             samples = np.flatnonzero(sample_present)
@@ -306,7 +318,7 @@ class DonorData:
             if not np.array_equal(stated[known].astype(str), expected[known].astype(str)):
                 raise ValueError(f"C.obs['{self.donor_id}'] disagrees with the donor of the sample of some cells.")
 
-        self._D, self._S, self._C = _own(D), _own(S), _own(C)
+        self._D, self._S, self._C = D, S, C
         self._D_is_table, self._S_is_table = D_is_table, S_is_table
 
     def _raise_empty(self, D, S, C) -> None:
@@ -336,7 +348,15 @@ class DonorData:
         new.sample_id = self.sample_id
         new._var_dims_to_sync = list(self._var_dims_to_sync if var_dims_to_sync is None else var_dims_to_sync)
         new.uns = _copy.deepcopy(self.uns)
-        new._match(D, S, C, self._D_is_table, self._S_is_table)
+        new._match(D, S, C, self._D_is_table, self._S_is_table, checked=True)
+        # unchanged levels get own views
+        with _keep_categories(not new._D_is_table):
+            if new._D is self._D:
+                new._D = new._D.copy() if new._D_is_table else new._D[:]
+        if new._S is not None and new._S is self._S:
+            new._S = new._S.copy() if new._S_is_table else new._S[:]
+        if new._C is self._C:
+            new._C = new._C[:]
         return new
 
     def _finish(self, new: DonorData, inplace: bool) -> DonorData | None:
@@ -580,8 +600,8 @@ class DonorData:
                 continue
             columns = C.var_names[C.var_names.isin(frame.columns)]
             if not frame.columns.equals(columns):
-                if D.is_view:
-                    D = _utils.copy_container(D)
+                if D is self._D or D.is_view:
+                    D = _detached(D)
                 D.obsm[key] = D.obsm[key][columns]
         return D, kept
 
@@ -589,12 +609,13 @@ class DonorData:
         self, D_obs=slice(None), D_var=slice(None), C_obs=slice(None), C_var=slice(None), S_obs=slice(None)
     ) -> DonorData:
         D, S, C = self._D, self._S, self._C
-        if not _utils.is_full_slice(D_obs):
-            D = D[_utils.by_label(D_obs, D.obs_names, "donors")]
-        if not _utils.is_full_slice(D_var):
-            if self._D_is_table:
-                raise IndexError("D is a donor table and has no variables to select.")
-            D = D[:, _utils.by_label(D_var, D.var_names, "donor variables")]
+        if not _utils.is_full_slice(D_var) and self._D_is_table:
+            raise IndexError("D is a donor table and has no variables to select.")
+        with _keep_categories(not self._D_is_table):
+            if not _utils.is_full_slice(D_obs):
+                D = D[_utils.by_label(D_obs, D.obs_names, "donors")]
+            if not _utils.is_full_slice(D_var):
+                D = D[:, _utils.by_label(D_var, D.var_names, "donor variables")]
         if not _utils.is_full_slice(S_obs):
             if S is None:
                 raise IndexError("This DonorData has no sample level.")
@@ -603,9 +624,6 @@ class DonorData:
             C = C[_utils.by_label(C_obs, C.obs_names, "cells")]
         if not _utils.is_full_slice(C_var):
             C = C[:, _utils.by_label(C_var, C.var_names, "cell variables")]
-        D = D[:] if D is self._D else D
-        S = S[:] if S is not None and S is self._S else S
-        C = C[:] if C is self._C else C
         D, kept = self._sync_var_dims(D, C)
         return self._derive(D, S, C, kept)
 
@@ -1456,7 +1474,8 @@ class DonorData:
         obs["total_counts"] = totals
         if groupby is not None:
             return AnnData(X=values, obs=obs, var=adata.var.copy())
-        units = container[keep]
+        with _keep_categories(level == "donor" and not self._D_is_table):
+            units = container[keep]
         return AnnData(
             X=values,
             obs=obs,
@@ -1845,25 +1864,6 @@ class DonorData:
         )
 
 
-_VIEW_X_WRITES_THROUGH = tuple(int(part) for part in version("anndata").split(".")[:2]) < (0, 13)
-
-
-def _writes_through(level: AnnData | MuData) -> bool:
-    """Whether assigning ``X`` of ``level`` would write into the in-memory matrix of the object it views."""
-    if not (_VIEW_X_WRITES_THROUGH and level.is_view):
-        return False
-    if isinstance(level, MuData):
-        return any(_writes_through(mod) for mod in level.mod.values())
-    return isinstance(level._adata_ref.X, np.ndarray | sp.spmatrix | sp.sparray)
-
-
-def _own(level: AnnData | MuData | None) -> AnnData | MuData | None:
-    """``level``, or a copy of it if assigning its ``X`` would write into another object."""
-    if level is not None and _writes_through(level):
-        return _utils.copy_container(level)
-    return level
-
-
 def _indexed_by(obs: pd.DataFrame, key: str, where: str) -> pd.DataFrame:
     """A copy of ``obs`` indexed by the identifiers as text, with a ``key`` column of the same text if it has one."""
     if key in obs.columns and obs.index.name != key:
@@ -1887,6 +1887,15 @@ def _detached(level: AnnData | MuData, obs: pd.DataFrame | None = None) -> AnnDa
     new = _utils.copy_container(level)
     new.obs = obs
     return new
+
+
+def _match_codes(labels: pd.Series, names: pd.Index, units: str, key: str, checked: bool) -> np.ndarray:
+    """Position of every label in ``names``; unless ``checked``, warn about the missing labels."""
+    if checked:
+        return _utils.codes_for(labels, names)
+    codes, missing = _utils.codes_and_missing(labels, names)
+    _log_missing_labels(labels, units, key, missing=missing)
+    return codes
 
 
 def _drop_missing_names(level: AnnData | MuData, units: str, key: str) -> AnnData | MuData:

@@ -275,3 +275,31 @@ def test_splits_reject_a_stratify_series_that_cannot_be_matched_by_name(stratify
         dd.train_test_split(test_size=2, stratify=stratify)
     with pytest.raises(ValueError, match="cannot be matched by name"):
         next(dd.kfold(2, stratify=stratify))
+
+
+LABEL_VALUES = {
+    "text": pd.Series(["a", "b", "nan", None, "a", "NA", " a", "2"]),
+    "whole floats": pd.Series([1.0, 2.0, np.nan, 1.0]),
+    "fractions": pd.Series([1.5, 2.0, np.nan]),
+    "mixed objects": pd.Series([1, "1", 2, None, "none"], dtype=object),
+    "categorical": pd.Series(pd.Categorical(["a", "nan", None, "2", "a"], categories=["2", "a", "nan", "unused"])),
+    "categorical floats": pd.Series(pd.Categorical([1.0, 2.0, None, 2.0])),
+    "string dtype": pd.Series(["a", "b", None, "n/a"], dtype="string"),
+    "nullable integers": pd.Series([1, 2, None, 1], dtype="Int64"),
+}
+
+
+@pytest.mark.parametrize("values", LABEL_VALUES.values(), ids=LABEL_VALUES.keys())
+def test_codes_for_matches_every_label_on_its_own(values):
+    from donordata._core import _utils
+
+    categories = pd.Index(["1", "2", "a", "b", "1.5", "nan"])
+    labels = np.asarray(_utils.string_labels(values), dtype=object)
+    expected = np.asarray(categories.get_indexer(labels), dtype=np.int64)
+    expected[pd.isna(labels)] = -1
+    np.testing.assert_array_equal(_utils.codes_for(values, categories), expected)
+    missing = values.isna() | values.astype(str).str.strip().str.lower().isin(_utils.MISSING_LABELS)
+    np.testing.assert_array_equal(_utils.is_missing_label(values), missing.to_numpy())
+    codes, flagged = _utils.codes_and_missing(values, categories)
+    np.testing.assert_array_equal(codes, expected)
+    np.testing.assert_array_equal(flagged, missing.to_numpy())

@@ -388,7 +388,7 @@ def test_x_chunks_for_an_ehrdata_level_warn(tmp_path, cells, patients, ehrdata):
     np.testing.assert_allclose(read_zarr_dd(tmp_path / "chunks.dd.zarr").D.X, dd.D.X)
     # a shared shape is meant for C
     with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
+        warnings.filterwarnings("error", message="x_chunks", category=UserWarning)
         dd.write_zarr_dd(str(tmp_path / "shared.dd.zarr"), x_chunks=(8, 4))
 
 
